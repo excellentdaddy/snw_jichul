@@ -1,4 +1,4 @@
-; S&W 지출결의서 작성이 — 설치 프로그램 (Inno Setup 6)
+; 지출이 — 설치 프로그램 (Inno Setup 6)
 ; tools/build.py 가 /DAppVersion=... /DSourceDir=... /DOutputDir=... 를 넘겨 컴파일한다.
 
 #ifndef AppVersion
@@ -11,7 +11,7 @@
   #define OutputDir "..\dist"
 #endif
 
-#define AppName "S&W 지출결의서 작성이"
+#define AppName "지출이"
 #define AppExe "지출결의서.exe"
 
 [Setup]
@@ -52,6 +52,9 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 [InstallDelete]
 ; 업데이트 시 예전 버전의 남은 라이브러리 정리
 Type: filesandordirs; Name: "{app}\_internal"
+; 예전 이름(S&W 지출결의서 작성이)의 바로가기 정리
+Type: files; Name: "{autodesktop}\S&W 지출결의서 작성이.lnk"
+Type: filesandordirs; Name: "{autoprograms}\S&W 지출결의서 작성이"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

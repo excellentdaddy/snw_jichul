@@ -281,7 +281,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.store = store
         self.records = []
-        self.setWindowTitle("S&W 지출결의서 작성이")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(resource_path("assets", "icon.ico")))
         self.setMinimumSize(1360, 780)
         self._loading = False

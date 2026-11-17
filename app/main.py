@@ -1,4 +1,4 @@
-"""지출결의서 작성이 — 시작점."""
+"""지출이 — 시작점."""
 import os
 import sys
 import traceback
