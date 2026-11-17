@@ -77,8 +77,13 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS ix_records_date ON records(date);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+            -- 첨부 이미지(엑셀 표 등): 내용 해시로 한 번만 저장
+            CREATE TABLE IF NOT EXISTS images (hash TEXT PRIMARY KEY, png BLOB);
             """
         )
+        cols = [r[1] for r in self.con.execute("PRAGMA table_info(records)")]
+        if "attach" not in cols:  # 예전 데이터 파일에 첨부 칸 추가
+            self.con.execute("ALTER TABLE records ADD COLUMN attach TEXT")
         self.con.commit()
 
     # ---------- 작성이력 ----------
@@ -100,19 +105,52 @@ class Store:
         )
         return cur.fetchone() is not None
 
-    def add(self, rec: dict, source="직접작성", commit=True) -> bool:
+    def _attach_json(self, images):
+        """images: [{"png": bytes, "x","y","w","h": mm}] → 이미지 표에 저장하고 위치 정보 JSON 반환."""
+        if not images:
+            return None
+        import hashlib
+        out = []
+        for im in images:
+            h = hashlib.sha1(im["png"]).hexdigest()
+            self.con.execute("INSERT OR IGNORE INTO images(hash, png) VALUES(?, ?)", (h, im["png"]))
+            out.append({"hash": h, **{k: round(float(im[k]), 2) for k in ("x", "y", "w", "h")}})
+        return json.dumps(out)
+
+    def add(self, rec: dict, source="직접작성", commit=True, images=None) -> bool:
+        """새로 추가하면 True. 같은 내용이 이미 있으면 False (이미지가 있으면 그 이력의 이미지만 갱신)."""
         r = self._norm(rec)
+        attach = self._attach_json(images)
         if self.exists(r):
+            if attach:
+                self.con.execute(
+                    "UPDATE records SET attach=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
+                    (attach, r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
+                if commit:
+                    self.con.commit()
             return False
         self.con.execute(
-            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created,attach)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"],
-             r["account"], source, datetime.now().isoformat(timespec="seconds")),
+             r["account"], source, datetime.now().isoformat(timespec="seconds"), attach),
         )
         if commit:
             self.con.commit()
         return True
+
+    def images_of(self, rec: dict):
+        """이력의 첨부 이미지 [{"png": bytes, x, y, w, h}] (불러올 때만 읽는다)."""
+        try:
+            items = json.loads(rec.get("attach") or "[]")
+        except ValueError:
+            return []
+        out = []
+        for it in items:
+            row = self.con.execute("SELECT png FROM images WHERE hash=?", (it.get("hash"),)).fetchone()
+            if row:
+                out.append({"png": bytes(row[0]), **{k: it[k] for k in ("x", "y", "w", "h")}})
+        return out
 
     def add_many(self, recs, source):
         added = skipped = 0
@@ -126,7 +164,20 @@ class Store:
 
     def delete(self, rid: int):
         self.con.execute("DELETE FROM records WHERE id=?", (rid,))
+        self._clean_images()
         self.con.commit()
+
+    def _clean_images(self):
+        """어느 이력에서도 쓰지 않는 이미지는 지운다."""
+        used = set()
+        for (a,) in self.con.execute("SELECT attach FROM records WHERE attach IS NOT NULL AND attach<>''"):
+            try:
+                used.update(it.get("hash") for it in json.loads(a))
+            except ValueError:
+                pass
+        for (h,) in self.con.execute("SELECT hash FROM images").fetchall():
+            if h not in used:
+                self.con.execute("DELETE FROM images WHERE hash=?", (h,))
 
     def all(self):
         return [dict(r) for r in self.con.execute(

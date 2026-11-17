@@ -5,8 +5,8 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QDate, QMarginsF, QRectF, Qt, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QDate, QIODevice, QMarginsF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QPen, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QSplitter, QCheckBox, QComboBox, QCompleter, QDateEdit, QFileDialog, QGridLayout,
@@ -27,9 +27,10 @@ ACCOUNTS = ["가지급금", "검사수수료", "교육훈련비", "도서인쇄�
             "부재료", "상품", "세금과공과", "소모품비", "수선비", "수출제비용", "여비교통비",
             "외주가공비", "운반비", "원재료", "접대비", "지급수수료", "차량유지비", "통신비", "포장비"]
 
-AMT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원")
 AMT_VAT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원(\s?\(VAT 포함\)|\s?\(VAT포함\))?")
 VAT_RE = re.compile(r"\(?(VAT\s*포함)\)?", re.I)
+# 내역의 '금액 :' 줄 — 기본 틀처럼 숫자가 빈 '2) 금액 : 원' 도 잡는다
+AMT_LINE_RE = re.compile(r"(금\s*액\s*:\s*)(?:\d{1,3}(?:,\d{3})*|\d+)?\s?원(?:\s?\(VAT\s*포함\))?", re.I)
 
 PAGE_WRITE, PAGE_SETTINGS = 0, 1
 
@@ -83,27 +84,157 @@ def field_label(text):
 
 # ---------------------------------------------------------------- 미리보기
 class Preview(QWidget):
-    """양식 부분만 잘라 크게 보여 준다 (용지 위·아래 빈 여백 생략)."""
+    """양식 부분만 잘라 크게 보여 준다 (용지 위·아래 빈 여백 생략).
 
-    def __init__(self):
+    editable=True 이면 doc["images"] 의 이미지를 마우스로 옮기고(드래그) 크기를 바꾼다(오른쪽 아래 모서리).
+    """
+    imagesChanged = Signal()
+    HANDLE_MM = 2.5
+
+    def __init__(self, editable=False):
         super().__init__()
         self.doc, self.lay = {}, None
         self.adjust, self.highlight = {}, None
         self.show_bg = True
         self.bg = {}
+        self.editable = editable
+        self.sel = -1
+        self._drag = None
+        self._view = None  # (ox, oy, s, vx0, vy0)
         self.setMinimumWidth(380)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        if editable:
+            self.setMouseTracking(True)
+            self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
     def set(self, doc, lay, adjust=None, highlight=None):
         self.doc, self.lay = doc, lay
         self.adjust, self.highlight = adjust or {}, highlight
+        if self.sel >= len(self.images()):
+            self.sel = -1
         self.update()
+
+    def images(self):
+        return self.doc.get("images") or []
 
     def _bg(self, name):
         if name not in self.bg:
             self.bg[name] = QImage(resource_path("assets", name))
         return self.bg[name]
 
+    # ---------- 좌표 변환 ----------
+    def _to_mm(self, pos):
+        if not self._view:
+            return None
+        ox, oy, sc, vx0, vy0 = self._view
+        return (pos.x() - ox) / sc + vx0, (pos.y() - oy) / sc + vy0
+
+    @staticmethod
+    def _handles(im):
+        """손잡이 8개: 모서리(nw,ne,sw,se)=비율 유지, 변 중간(n,s,w,e)=세로만·가로만."""
+        x0, y0 = im["x"], im["y"]
+        x1, y1 = x0 + im["w"], y0 + im["h"]
+        xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
+        return {"nw": (x0, y0), "n": (xm, y0), "ne": (x1, y0), "e": (x1, ym),
+                "se": (x1, y1), "s": (xm, y1), "sw": (x0, y1), "w": (x0, ym)}
+
+    _CURSORS = {"nw": Qt.CursorShape.SizeFDiagCursor, "se": Qt.CursorShape.SizeFDiagCursor,
+                "ne": Qt.CursorShape.SizeBDiagCursor, "sw": Qt.CursorShape.SizeBDiagCursor,
+                "n": Qt.CursorShape.SizeVerCursor, "s": Qt.CursorShape.SizeVerCursor,
+                "e": Qt.CursorShape.SizeHorCursor, "w": Qt.CursorShape.SizeHorCursor,
+                "move": Qt.CursorShape.SizeAllCursor}
+
+    def _hit(self, mm):
+        """(이미지 번호, 손잡이 이름|'move') 또는 (-1, None)."""
+        x, y = mm
+        ims = self.images()
+        if 0 <= self.sel < len(ims):
+            for name, (hx, hy) in self._handles(ims[self.sel]).items():
+                if abs(x - hx) <= self.HANDLE_MM and abs(y - hy) <= self.HANDLE_MM:
+                    return self.sel, name
+        for i in range(len(ims) - 1, -1, -1):
+            im = ims[i]
+            if im["x"] <= x <= im["x"] + im["w"] and im["y"] <= y <= im["y"] + im["h"]:
+                return i, "move"
+        return -1, None
+
+    # ---------- 마우스 ----------
+    def mousePressEvent(self, e):
+        if not self.editable or e.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(e)
+        mm = self._to_mm(e.position())
+        if mm is None:
+            return
+        i, mode = self._hit(mm)
+        self.sel = i
+        if i >= 0:
+            im = self.images()[i]
+            self._drag = (mode, mm, dict(im))
+        else:
+            self._drag = None
+        self.update()
+
+    def mouseMoveEvent(self, e):
+        if not self.editable:
+            return super().mouseMoveEvent(e)
+        mm = self._to_mm(e.position())
+        if mm is None:
+            return
+        if self._drag:
+            mode, start, orig = self._drag
+            im = self.images()[self.sel]
+            dx, dy = mm[0] - start[0], mm[1] - start[1]
+            if mode == "move":
+                im["x"], im["y"] = orig["x"] + dx, orig["y"] + dy
+            else:
+                self._resize(im, orig, mode, dx, dy, bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier))
+            self.update()
+        else:
+            i, mode = self._hit(mm)
+            self.setCursor(self._CURSORS.get(mode, Qt.CursorShape.ArrowCursor))
+
+    @staticmethod
+    def _resize(im, orig, h, dx, dy, free):
+        """손잡이 h 를 (dx, dy) 만큼 끌었을 때. 반대쪽 변·모서리는 고정.
+
+        변(e/w/n/s): 가로만 또는 세로만. 모서리: 비율 유지 (Shift 를 누르면 자유롭게).
+        """
+        MIN = 3.0
+        x0, y0 = orig["x"], orig["y"]
+        x1, y1 = x0 + orig["w"], y0 + orig["h"]
+        if "e" in h:
+            x1 = max(x0 + MIN, x1 + dx)
+        if "w" in h:
+            x0 = min(x1 - MIN, x0 + dx)
+        if "s" in h:
+            y1 = max(y0 + MIN, y1 + dy)
+        if "n" in h:
+            y0 = min(y1 - MIN, y0 + dy)
+        if len(h) == 2 and not free:  # 모서리: 가로 변화에 맞춰 세로를 비율대로
+            w = x1 - x0
+            nh = w * orig["h"] / orig["w"]
+            if "n" in h:
+                y0 = y1 - nh
+            else:
+                y1 = y0 + nh
+        im["x"], im["y"], im["w"], im["h"] = x0, y0, x1 - x0, y1 - y0
+
+    def mouseReleaseEvent(self, e):
+        if self.editable and self._drag:
+            self._drag = None
+            self.imagesChanged.emit()
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e):
+        if self.editable and e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and 0 <= self.sel < len(self.images()):
+            del self.images()[self.sel]
+            self.sel = -1
+            self.imagesChanged.emit()
+            self.update()
+            return
+        super().keyPressEvent(e)
+
+    # ---------- 그리기 ----------
     def paintEvent(self, _):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#f1f3f4"))
@@ -116,6 +247,7 @@ class Preview(QWidget):
         s = min((self.width() - 2 * m) / vw, (self.height() - 2 * m) / vh)  # px/mm
         ox = (self.width() - vw * s) / 2
         oy = (self.height() - vh * s) / 2
+        self._view = (ox, oy, s, vx0, vy0)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -130,6 +262,21 @@ class Preview(QWidget):
                         self._bg(self.lay.background))
             p.setOpacity(1.0)
         render.render(p, self.doc, self.lay, guides=not self.show_bg, adjust=self.adjust, highlight=self.highlight)
+        ims = self.images()
+        if self.editable and 0 <= self.sel < len(ims):
+            im = ims[self.sel]
+            U = render.U
+            p.setPen(QPen(QColor(26, 115, 232), 0.35 * U, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(QRectF(im["x"] * U, im["y"] * U, im["w"] * U, im["h"] * U))
+            hs = self.HANDLE_MM * U
+            p.setPen(QPen(QColor(26, 115, 232), 0.25 * U)); p.setBrush(QColor("white"))
+            for name, (hx, hy) in self._handles(im).items():
+                if len(name) == 2:  # 모서리: 파란 네모 (비율 유지)
+                    p.setBrush(QColor(26, 115, 232))
+                else:               # 변 중간: 흰 네모 (가로만·세로만)
+                    p.setBrush(QColor("white"))
+                p.drawRect(QRectF(hx * U - hs / 2, hy * U - hs / 2, hs, hs))
         p.end()
 
 
@@ -292,6 +439,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1360, 780)
         self._loading = False
         self._prev_name = ""
+        self.images = []  # 미리보기에 올린 이미지 [{"img": QImage, "x","y","w","h": mm}]
 
         self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(120)
         self.timer.timeout.connect(self.refresh_preview)
@@ -534,9 +682,16 @@ class MainWindow(QMainWindow):
         self.btn_zero.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_zero.setToolTip("이 프린터의 출력 위치(영점) 보정 — 프린터마다 따로 저장")
         self.btn_zero.clicked.connect(self.do_zero)
-        self.preview = Preview()
+        self.preview = Preview(editable=True)
+        self.preview.imagesChanged.connect(self.changed)
+        local_shortcut(QKeySequence.StandardKey.Paste, self.preview, self.paste_image)
+        self.btn_img = QPushButton("이미지 붙여넣기"); self.btn_img.setObjectName("Zero")
+        self.btn_img.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_img.setToolTip("클립보드의 이미지(엑셀 표 복사 등)를 미리보기에 올립니다.\n"
+                                "드래그로 이동 · 모서리(파란 점)로 비율 유지 크기 조절 · 변 가운데(흰 점)로 가로만/세로만 조절 · Delete 로 삭제")
+        self.btn_img.clicked.connect(self.paste_image)
         pv_card = card(self.preview, "미리보기", margins=(10, 10, 10, 10),
-                       extra=[self.cb_layout, self.cb_printer, self.btn_zero])
+                       extra=[self.btn_img, self.cb_layout, self.cb_printer, self.btn_zero])
 
         split = QSplitter(); split.setChildrenCollapsible(False); split.setHandleWidth(14)
         split.addWidget(pv_card)
@@ -612,6 +767,8 @@ class MainWindow(QMainWindow):
                    + (f"<br>비고: {r['note']}" if r["note"] else ""))
             first = (r["detail"] or "").split("\n")[0]
             first = first.split(":", 1)[1].strip() if ":" in first else first
+            if r.get("attach"):
+                first = "[이미지] " + first
             for c, val in enumerate([r["date"], r["payee"], f"{r['amount']:,}", first]):
                 it = QTableWidgetItem(val)
                 if c == 2:
@@ -808,6 +965,7 @@ class MainWindow(QMainWindow):
             "note": "",  # 비고란 없음 — 계좌 등은 내역에 함께 적는다
             "detail_size": self.sp_size.value(),
             "approvals": self.approval.states(),
+            "images": self.images,
         }
 
     def changed(self, *_):
@@ -860,30 +1018,37 @@ class MainWindow(QMainWindow):
         self.ed_amount.setText(f"{n:,}" if n else "")
         self.lbl_kor.setText(f"금 {numberstring(n)}원정" if n else "")
 
-    def _amount_edited(self, _):
+    def _apply_amount_to_detail(self):
+        """위의 금액·VAT 를 내역에 반영.
+
+        - '금액 :' 줄이 있으면 그 줄만 바꾼다 (기본 틀의 빈 '2) 금액 : 원' 포함). 다른 'N원' 은 그대로.
+        - '금액 :' 줄이 없으면 예전처럼 내역 안의 'N원' 을 바꾼다.
+        - 둘 다 없으면 내역을 건드리지 않는다 (맨 아래에 새 줄을 붙이지 않음).
+        반환: 바꿨으면 True
+        """
         n = self.amount()
-        self._set_amount_text(n)
-        # 내역 안의 "N원" 을 새 금액으로 바꿈 (기존 엑셀과 동일)
+        if not n:
+            return False
         t = self.ed_detail.toPlainText()
-        if n and AMT_RE.search(t):
-            self.ed_detail.setPlainText(AMT_RE.sub(f"{n:,}원", t))
+        new = f"{n:,}원" + ("(VAT 포함)" if self.chk_vat.isChecked() else "")
+        if AMT_LINE_RE.search(t):
+            t2 = AMT_LINE_RE.sub(lambda m: m.group(1) + new, t)
+        elif AMT_VAT_RE.search(t):
+            t2 = AMT_VAT_RE.sub(new, t)
+        else:
+            return False
+        if t2 != t:
+            self.ed_detail.setPlainText(t2)
+        return True
+
+    def _amount_edited(self, _):
+        self._set_amount_text(self.amount())
+        self._apply_amount_to_detail()
         self.changed()
 
     def _vat_clicked(self, on):
-        n = self.amount()
-        t = self.ed_detail.toPlainText()
-        if not n:
-            return
-        new = f"{n:,}원"
-        if on:
-            if AMT_VAT_RE.search(t):
-                t = AMT_VAT_RE.sub(new + "(VAT 포함)", t)
-            else:
-                t = t + "\n" + new + "(VAT 포함)"
-        else:
-            t = VAT_RE.sub("", t)
-            t = AMT_VAT_RE.sub(new, t)
-        self.ed_detail.setPlainText(t)
+        if self.amount() and not self._apply_amount_to_detail():
+            self.toast("내역에 금액 줄(예: 2) 금액 : …원)이 없어 'VAT 포함' 문구는 넣지 않았습니다.", 5000)
 
     def _template(self):
         n = self.amount()
@@ -892,6 +1057,50 @@ class MainWindow(QMainWindow):
         self.ed_detail.setPlainText(f"1) 내역 : \n\n2) 금액 : {amt}\n\n3) 첨부 : 관련문서 1매.  끝.")
         c = self.ed_detail.textCursor(); c.setPosition(len("1) 내역 : ")); self.ed_detail.setTextCursor(c)
         self.ed_detail.setFocus()
+
+    # ---------- 이미지(엑셀 표 등) ----------
+    def paste_image(self):
+        from PySide6.QtWidgets import QApplication
+        cb = QApplication.clipboard()
+        md = cb.mimeData()
+        img = cb.image() if md is not None and md.hasImage() else QImage()
+        if img.isNull():
+            info(self, "이미지 붙여넣기", "클립보드에 이미지가 없습니다.\n"
+                 "엑셀에서 표를 선택해 복사(Ctrl+C)한 뒤 다시 눌러 주세요.")
+            return
+        img = img.convertToFormat(QImage.Format.Format_ARGB32)
+        # 처음 크기: 화면 해상도 기준 실제 크기, 내역 칸 너비를 넘으면 줄임. 위치: 내역 글 아래
+        box = self.lay.fields["detail"]
+        dpi_x = img.dotsPerMeterX() * 0.0254 or 96
+        w = img.width() * 25.4 / (dpi_x if dpi_x > 30 else 96)
+        h = w * img.height() / max(1, img.width())
+        if w > box.w:
+            h, w = h * box.w / w, box.w
+        used, _ = self.detail_fit()
+        A = render._Adj(self.adjust())
+        first_h, line_h = render._line_metrics(render.detail_font(self.sp_size.value(), A), box)
+        y = box.y0 + (used * line_h) / render.U + 1.0 if used else box.y0
+        self.images.append({"img": img, "x": box.x0, "y": min(y, box.y1 - 5), "w": w, "h": h})
+        self.preview.sel = len(self.images) - 1
+        self.preview.setFocus()
+        self.changed()
+        self.toast("이미지를 올렸습니다. 드래그로 옮기고, 모서리(비율 유지)나 변 가운데(가로·세로 따로)로 크기를 바꾸세요. (Delete: 삭제)", 7000)
+
+    def _images_payload(self):
+        out = []
+        for im in self.images:
+            buf = QBuffer(); buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            im["img"].save(buf, "PNG")
+            out.append({"png": bytes(buf.data()), **{k: im[k] for k in ("x", "y", "w", "h")}})
+        return out
+
+    def _set_images(self, items):
+        self.images.clear()
+        for it in items:
+            img = QImage(); img.loadFromData(QByteArray(it["png"]), "PNG")
+            if not img.isNull():
+                self.images.append({"img": img, **{k: float(it[k]) for k in ("x", "y", "w", "h")}})
+        self.preview.sel = -1
 
     def detail_fit(self, text=None):
         """(쓴 줄, 최대 줄) — 글자크기와 용지 칸 크기로 계산 (작게 하면 더 많이 들어감)."""
@@ -940,6 +1149,7 @@ class MainWindow(QMainWindow):
         self.ed_name.setCurrentText(self.store.get("default_name", ""))
         self.ed_detail.clear()
         self.sp_size.setValue(11)
+        self.images.clear(); self.preview.sel = -1
         self.approval.reset(today)
         self._loading = False
         self._detail_changed()
@@ -958,6 +1168,7 @@ class MainWindow(QMainWindow):
         if note and note not in detail:
             detail = (detail + "\n" if detail else "") + note  # 예전 비고(계좌 등)는 내역 맨 아래 줄로
         self.ed_detail.setPlainText(detail)
+        self._set_images(self.store.images_of(rec))  # 저장해 둔 이미지(엑셀 표 등)도 같은 자리에
         self.chk_vat.setChecked(bool(re.search(r"vat\s*포함", rec.get("detail") or "", re.I)))
         self.approval.reset(today)
         if self.store.get("auto_jeon_200k", False) and int(rec.get("amount") or 0) <= 200000:
@@ -1022,9 +1233,10 @@ class MainWindow(QMainWindow):
         if not d["detail"] and not d["payee"]:
             warn(self, "저장", "지출처나 내역을 입력하세요.")
             return
-        added = self.store.add(self._record(d))
+        added = self.store.add(self._record(d), images=self._images_payload())
         self.load_history()
-        self.toast("작성이력에 저장했습니다." if added else "같은 내용이 이미 저장돼 있습니다.")
+        self.toast("작성이력에 저장했습니다." if added else
+                   ("이미지를 저장했습니다." if self.images else "같은 내용이 이미 저장돼 있습니다."))
 
     def make_printer(self):
         pr = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -1068,7 +1280,7 @@ class MainWindow(QMainWindow):
         if not self._validate(d):
             return
         if self.print_doc(d):
-            added = self.store.add(self._record(d))
+            added = self.store.add(self._record(d), images=self._images_payload())
             self.load_history()
             self.toast("인쇄했습니다." + (" 작성이력에 저장했습니다." if added else ""), 5000)
 

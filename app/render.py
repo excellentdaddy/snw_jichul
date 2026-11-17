@@ -247,6 +247,13 @@ def render(p, doc: dict, lay: FormLayout, guides=False, adjust=None, highlight=N
             _text(p, mbox, str(dd.month), font(A.size("ap_month")), C)
             _text(p, dbox, str(dd.day), font(A.size("ap_day")), C)
 
+    # ---------- 첨부 이미지(엑셀 표 등): 미리보기에서 놓은 자리·크기 그대로 ----------
+    for im in doc.get("images") or []:
+        p.save()
+        p.setRenderHint(p.RenderHint.SmoothPixmapTransform)
+        p.drawImage(QRectF(im["x"] * U, im["y"] * U, im["w"] * U, im["h"] * U), im["img"])
+        p.restore()
+
     if highlight:
         p.setPen(QPen(QColor(26, 115, 232), 0.3 * U, Qt.PenStyle.DashLine))
         p.setBrush(QColor(26, 115, 232, 30))
