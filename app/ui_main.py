@@ -69,6 +69,13 @@ def safe_eval(expr: str):
         return None
 
 
+def local_shortcut(key, widget, fn):
+    """그 위젯에 커서가 있을 때만 동작하는 단축키."""
+    sc = QShortcut(QKeySequence(key), widget, activated=fn)
+    sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+    return sc
+
+
 def field_label(text):
     lb = QLabel(text)
     lb.setObjectName("FieldLabel")
@@ -552,10 +559,10 @@ class MainWindow(QMainWindow):
         v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(8)
         self.lbl_qcount = QLabel(""); self.lbl_qcount.setObjectName("Hint")
         self.ed_qsearch = QLineEdit(); self.ed_qsearch.setClearButtonEnabled(True)
-        self.ed_qsearch.setPlaceholderText("지출처 · 내역 · 금액으로 검색  (↓ 또는 Enter로 목록 이동)")
+        self.ed_qsearch.setPlaceholderText("지출처 · 내역 · 금액으로 검색  (↓ 키로 목록 이동)")
         self.ed_qsearch.textChanged.connect(self.filter_quick)
-        self.ed_qsearch.returnPressed.connect(self._quick_focus_table)
-        QShortcut(QKeySequence(Qt.Key.Key_Down), self.ed_qsearch, activated=self._quick_focus_table)
+        # Enter 는 아무 동작 없이 검색칸에 머문다. ↓ 키만 목록으로 (이 칸에서만 동작)
+        local_shortcut(Qt.Key.Key_Down, self.ed_qsearch, self._quick_focus_table)
         v.addWidget(self.ed_qsearch)
         self.qtbl = QTableWidget()
         self.qtbl.setColumnCount(4)
@@ -573,9 +580,10 @@ class MainWindow(QMainWindow):
             self.qtbl.setColumnWidth(c, wd)
         hh.setStretchLastSection(True)
         self.qtbl.cellDoubleClicked.connect(lambda r, c: self.quick_load())
-        QShortcut(QKeySequence(Qt.Key.Key_Return), self.qtbl, activated=self.quick_load)
-        QShortcut(QKeySequence(Qt.Key.Key_Enter), self.qtbl, activated=self.quick_load)
-        QShortcut(QKeySequence(Qt.Key.Key_Delete), self.qtbl, activated=self.delete_selected)
+        # 표에 커서가 있을 때만 동작 (예전엔 창 전체에서 걸려 검색칸 Enter·내역 Delete 가 오동작)
+        local_shortcut(Qt.Key.Key_Return, self.qtbl, self.quick_load)
+        local_shortcut(Qt.Key.Key_Enter, self.qtbl, self.quick_load)
+        local_shortcut(Qt.Key.Key_Delete, self.qtbl, self.delete_selected)
         v.addWidget(self.qtbl, 1)
         h = QHBoxLayout()
         hint = QLabel("더블클릭·Enter로 불러오기"); hint.setObjectName("Hint")
@@ -596,10 +604,10 @@ class MainWindow(QMainWindow):
         q = self.ed_qsearch.text().strip().lower()
         qn = re.sub(r"[^\d]", "", q)
         rows = [r for r in self.records if self._match(r, q, qn)]
-        show = rows[:500]
         self.qtbl.setUpdatesEnabled(False)
-        self.qtbl.setRowCount(len(show))
-        for i, r in enumerate(show):
+        self.qtbl.setSortingEnabled(False)
+        self.qtbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
             tip = (f"<b>{r['date']} · {r['payee']} · {r['amount']:,}원</b><br>"
                    + (r["detail"] or "").replace("\n", "<br>")
                    + (f"<br>비고: {r['note']}" if r["note"] else ""))
@@ -614,8 +622,7 @@ class MainWindow(QMainWindow):
                 it.setToolTip(tip)
                 self.qtbl.setItem(i, c, it)
         self.qtbl.setUpdatesEnabled(True)
-        more = f" (상위 500건 표시)" if len(rows) > 500 else ""
-        self.lbl_qcount.setText(f"{len(rows):,}건{more}")
+        self.lbl_qcount.setText(f"{len(rows):,}건")
 
     def _quick_focus_table(self):
         if self.qtbl.rowCount():
