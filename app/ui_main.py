@@ -280,6 +280,47 @@ class Preview(QWidget):
         p.end()
 
 
+# ---------------------------------------------------------------- 인쇄 진행 표시
+class PrintProgress(QWidget):
+    """인쇄 버튼을 눌렀을 때 창 가운데에 뜨는 작은 진행 카드. 완료되면 1.5초 뒤 저절로 닫힌다."""
+
+    def __init__(self, parent, printer_name):
+        from PySide6.QtWidgets import QProgressBar
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setObjectName("PrintCard")
+        self.setFixedWidth(380)
+        v = QVBoxLayout(self); v.setContentsMargins(22, 18, 22, 18); v.setSpacing(10)
+        self.title = QLabel("인쇄 중"); self.title.setObjectName("PrintTitle")
+        self.msg = QLabel(""); self.msg.setObjectName("Hint")
+        self.bar = QProgressBar(); self.bar.setRange(0, 100); self.bar.setTextVisible(False); self.bar.setFixedHeight(8)
+        self.sub = QLabel(f"프린터: {printer_name}"); self.sub.setObjectName("Hint")
+        for wd in (self.title, self.msg, self.bar, self.sub):
+            v.addWidget(wd)
+        self.adjustSize()
+        g = parent.geometry()
+        self.move(g.x() + (g.width() - self.width()) // 2, g.y() + (g.height() - self.height()) // 2)
+        self.show(); self.raise_()
+        self._pump()
+
+    def _pump(self):
+        from PySide6.QtWidgets import QApplication
+        QApplication.processEvents()
+
+    def step(self, value, text):
+        self.bar.setValue(value)
+        self.msg.setText(text)
+        self._pump()
+
+    def done(self):
+        self.bar.setValue(100)
+        self.title.setText("✓ 프린터로 보냈습니다")
+        self.title.setObjectName("PrintDone"); self.title.style().unpolish(self.title); self.title.style().polish(self.title)
+        self.msg.setText("Windows 인쇄 대기열에 전송을 마쳤습니다.")
+        self._pump()
+        QTimer.singleShot(1500, self.close)
+
+
 # ---------------------------------------------------------------- 결재란 (실제 양식처럼 가로 배치)
 class ApprovalPanel(QWidget):
     def __init__(self, on_change):
@@ -684,14 +725,13 @@ class MainWindow(QMainWindow):
         self.btn_zero.clicked.connect(self.do_zero)
         self.preview = Preview(editable=True)
         self.preview.imagesChanged.connect(self.changed)
-        local_shortcut(QKeySequence.StandardKey.Paste, self.preview, self.paste_image)
-        self.btn_img = QPushButton("이미지 붙여넣기"); self.btn_img.setObjectName("Zero")
-        self.btn_img.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_img.setToolTip("클립보드의 이미지(엑셀 표 복사 등)를 미리보기에 올립니다.\n"
-                                "드래그로 이동 · 모서리(파란 점)로 비율 유지 크기 조절 · 변 가운데(흰 점)로 가로만/세로만 조절 · Delete 로 삭제")
-        self.btn_img.clicked.connect(self.paste_image)
+        # Ctrl+V: 창 전체 단축키. 입력칸(내역·금액 등)에 커서가 있으면 그 칸이 먼저 받아 글자로 붙고,
+        # 그 밖(미리보기 클릭 후, 이력 목록 등)에서는 클립보드 이미지를 미리보기에 올린다.
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Paste), self, activated=lambda: self.paste_image(quiet=True))
+        self.preview.setToolTip("Ctrl+V: 클립보드 이미지(엑셀 표 등) 올리기\n"
+                                "드래그로 이동 · 모서리(파란 점) 비율 유지 · 변 가운데(흰 점) 가로/세로 조절 · Delete 삭제")
         pv_card = card(self.preview, "미리보기", margins=(10, 10, 10, 10),
-                       extra=[self.btn_img, self.cb_layout, self.cb_printer, self.btn_zero])
+                       extra=[self.cb_layout, self.cb_printer, self.btn_zero])
 
         split = QSplitter(); split.setChildrenCollapsible(False); split.setHandleWidth(14)
         split.addWidget(pv_card)
@@ -1059,14 +1099,19 @@ class MainWindow(QMainWindow):
         self.ed_detail.setFocus()
 
     # ---------- 이미지(엑셀 표 등) ----------
-    def paste_image(self):
+    def paste_image(self, quiet=False):
         from PySide6.QtWidgets import QApplication
+        if self.pages.currentIndex() != PAGE_WRITE:
+            return
         cb = QApplication.clipboard()
         md = cb.mimeData()
         img = cb.image() if md is not None and md.hasImage() else QImage()
         if img.isNull():
-            info(self, "이미지 붙여넣기", "클립보드에 이미지가 없습니다.\n"
-                 "엑셀에서 표를 선택해 복사(Ctrl+C)한 뒤 다시 눌러 주세요.")
+            msg = "클립보드에 이미지가 없습니다. 엑셀에서 표를 선택해 복사(Ctrl+C)한 뒤 미리보기를 클릭하고 Ctrl+V 하세요."
+            if quiet:
+                self.toast(msg, 6000)
+            else:
+                info(self, "이미지 붙여넣기", msg)
             return
         img = img.convertToFormat(QImage.Format.Format_ARGB32)
         # 처음 크기: 화면 해상도 기준 실제 크기, 내역 칸 너비를 넘으면 줄임. 위치: 내역 글 아래
@@ -1258,10 +1303,14 @@ class MainWindow(QMainWindow):
             dlg.setWindowTitle("인쇄")
             if dlg.exec() != QPrintDialog.DialogCode.Accepted:
                 return False
+        prog = PrintProgress(self, pr.printerName() or "기본 프린터")
+        prog.step(15, "인쇄 준비 중…")
         p = QPainter()
         if not p.begin(pr):
+            prog.close()
             warn(self, "인쇄 실패", "프린터를 열 수 없습니다.\n설정 > 프린터 · 기본값에서 프린터를 확인하세요.")
             return False
+        prog.step(45, "지출결의서를 그리는 중…")
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         # fullPage 모드: 원점 = 용지 왼쪽 위 모서리. 0.01mm 단위로 맞춘다.
         k = pr.resolution() / 25.4 / render.U
@@ -1270,7 +1319,13 @@ class MainWindow(QMainWindow):
         p.translate(c["dx"] * render.U, c["dy"] * render.U)
         p.scale(c["sx"] / 100.0, c["sy"] / 100.0)
         render.render(p, d, self.lay, guides=guides, adjust=self.adjust())
-        p.end()
+        prog.step(80, "프린터로 보내는 중…")
+        ok = p.end()
+        if not ok:
+            prog.close()
+            warn(self, "인쇄 실패", "프린터로 보내지 못했습니다.\n프린터가 켜져 있는지, 연결 상태를 확인하세요.")
+            return False
+        prog.done()
         return True
 
     def do_print(self):

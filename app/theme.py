@@ -154,6 +154,11 @@ QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
 QScrollBar::handle:horizontal { background: #c4c7c5; border-radius: 4px; min-width: 30px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QWidget#PrintCard { background: SURFACE; border: 1px solid BORDER; border-radius: 12px; }
+QLabel#PrintTitle { font-size: 12pt; font-weight: 700; color: TEXT; }
+QLabel#PrintDone { font-size: 12pt; font-weight: 700; color: #188038; }
+QProgressBar { background: #e8eaed; border: none; border-radius: 4px; }
+QProgressBar::chunk { background: PRIMARY; border-radius: 4px; }
 QToolTip { background: #3c4043; color: white; border: none; padding: 8px; border-radius: 4px; }
 QMessageBox QLabel { font-size: 10pt; }
 QMessageBox QPushButton { min-width: 72px; }
