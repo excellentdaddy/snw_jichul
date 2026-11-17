@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 
 import importer
 from store import FIELD_LABELS, FIELDS
-from ui_common import card, info, warn
+from ui_common import ask, card, info, warn
 
 
 def fill_printers(cb):
@@ -127,56 +127,116 @@ class DataPanel(QWidget):
 
 
 class UpdatePanel(QWidget):
-    """설정 > 업데이트."""
+    """설정 > 업데이트: 버전 확인 · 최신 버전 받기 · 업데이트 이력 (서버 주소는 프로그램 안에 고정)."""
 
     def __init__(self, main):
         super().__init__()
+        from PySide6.QtWidgets import QTextBrowser
         from version import APP_VERSION
         self.main = main
         self.store = main.store
-        self.setMaximumWidth(860)
+        self.latest = None
+        self._threads = []
+        self.setMaximumWidth(900)
         v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(12)
+
         w = QWidget(); f = QFormLayout(w); f.setContentsMargins(0, 0, 0, 0); f.setSpacing(10)
         self.lbl_ver = QLabel(APP_VERSION)
-        self.ed_src = QLineEdit()
-        self.ed_src.setPlaceholderText("예) excellentdaddy/jichul   또는   \\\\서버\\공유\\지출결의서")
-        self.ed_src.setText(main.update_source())
+        self.lbl_latest = QLabel("—")
+        self.lbl_res = QLabel("—")
         self.chk_auto = QCheckBox("프로그램을 켤 때 자동으로 확인")
         self.chk_auto.setChecked(self.store.get("auto_update_check", True))
-        self.lbl_res = QLabel(""); self.lbl_res.setObjectName("Hint"); self.lbl_res.setWordWrap(True)
+        self.chk_auto.toggled.connect(lambda on: self.store.set("auto_update_check", on))
+        self.b_check = QPushButton("지금 확인"); self.b_check.clicked.connect(self.refresh)
+        self.b_get = QPushButton("최신 버전 받기"); self.b_get.setObjectName("Primary")
+        self.b_get.clicked.connect(self.download); self.b_get.setEnabled(False)
+        h = QHBoxLayout(); h.addWidget(self.b_check); h.addWidget(self.b_get); h.addStretch()
         f.addRow("지금 버전", self.lbl_ver)
-        f.addRow("업데이트 위치", self.ed_src)
-        f.addRow("", self.chk_auto)
-        h = QHBoxLayout()
-        b1 = QPushButton("저장"); b1.clicked.connect(self.save)
-        b2 = QPushButton("지금 확인"); b2.setObjectName("Primary"); b2.clicked.connect(self.check)
-        h.addWidget(b1); h.addWidget(b2); h.addStretch()
+        f.addRow("최신 버전", self.lbl_latest)
+        f.addRow("상태", self.lbl_res)
         f.addRow("", h)
-        f.addRow("", self.lbl_res)
-        v.addWidget(card(w, "업데이트",
-                         "GitHub 저장소(owner/repo)를 적으면 최신 Release 를 확인합니다. "
-                         "새 버전이 있으면 알려 주고, 설치까지 자동으로 진행합니다.", fixed=True))
-        v.addStretch()
+        f.addRow("", self.chk_auto)
+        v.addWidget(card(w, "업데이트", "새 버전이 있으면 받아서 자동으로 설치합니다. (작성이력·설정은 그대로 유지)",
+                         fixed=True))
 
-    def save(self):
-        self.store.set("update_source", self.ed_src.text().strip())
-        self.store.set("auto_update_check", self.chk_auto.isChecked())
-        self.main.toast("업데이트 설정을 저장했습니다.")
+        self.hist = QTextBrowser(); self.hist.setOpenLinks(False); self.hist.setMinimumHeight(240)
+        self.hist.setStyleSheet("QTextBrowser { border: none; background: transparent; }")
+        v.addWidget(card(self.hist, "업데이트 이력"), 1)
+        self.loaded = False
 
-    def check(self):
-        self.save()
+    # 설정 > 업데이트 화면을 처음 열 때 자동으로 불러온다
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self.loaded:
+            self.loaded = True
+            self.refresh()
+
+    def _run(self, thread, slot):
+        thread.done.connect(slot)
+        thread.finished.connect(lambda t=thread: self._threads.remove(t) if t in self._threads else None)
+        self._threads.append(thread)
+        thread.start()
+
+    def refresh(self):
+        import updater
+        src = self.main.update_source()
         self.lbl_res.setText("확인 중…")
-        self.main.check_update_now()
+        self.hist.setHtml("<p style='color:#5f6368'>불러오는 중…</p>")
+        self._run(updater.CheckThread(src, self), self.show_result)
+        self._run(updater.HistoryThread(src, self), self.show_history)
 
     def show_result(self, m, err):
-        from version import APP_VERSION
         import updater
+        self.latest = None
         if err:
-            self.lbl_res.setText(f"확인 실패: {err}")
-        elif updater.is_newer(m):
-            self.lbl_res.setText(f"새 버전 {m['version']} 이 있습니다. ({m.get('date', '')})")
+            self.lbl_latest.setText("—")
+            self.lbl_res.setText("확인하지 못했습니다 (인터넷 연결을 확인하세요)")
+            self.b_get.setEnabled(False)
+            return
+        self.lbl_latest.setText(f"{m['version']}" + (f"  ({m['date']})" if m.get("date") else ""))
+        if updater.is_newer(m):
+            self.latest = m
+            self.lbl_res.setText(f"새 버전 {m['version']} 이 있습니다")
+            self.lbl_res.setStyleSheet("color:#1a73e8; font-weight:700")
+            self.b_get.setEnabled(True)
+            self.b_get.setText(f"최신 버전 받기 ({m['version']})")
         else:
-            self.lbl_res.setText(f"최신 버전입니다. (서버 {m['version']} / 지금 {APP_VERSION})")
+            self.lbl_res.setText("최신 버전을 사용하고 있습니다")
+            self.lbl_res.setStyleSheet("color:#188038; font-weight:700")
+            self.b_get.setEnabled(False)
+            self.b_get.setText("최신 버전 받기")
+
+    def show_history(self, rows, err):
+        from html import escape
+        from version import APP_VERSION, parse
+        if err or rows is None:
+            self.hist.setHtml("<p style='color:#5f6368'>업데이트 이력을 불러오지 못했습니다.</p>")
+            return
+        if not rows:
+            self.hist.setHtml("<p style='color:#5f6368'>아직 이력이 없습니다.</p>")
+            return
+        cur = parse(APP_VERSION)
+        parts = []
+        for r in rows:
+            tag = ""
+            if parse(r["version"]) == cur:
+                tag = " <span style='color:#188038; font-weight:600'>· 사용 중</span>"
+            elif parse(r["version"]) > cur:
+                tag = " <span style='color:#1a73e8; font-weight:600'>· 새 버전</span>"
+            notes = escape(r.get("notes") or "변경 내용 없음").replace("\n", "<br>")
+            parts.append(
+                f"<div style='margin:0 0 14px 0'>"
+                f"<span style='font-size:11pt; font-weight:700; color:#202124'>버전 {escape(r['version'])}</span>"
+                f"<span style='color:#5f6368'>&nbsp;&nbsp;{escape(r.get('date', ''))}</span>{tag}"
+                f"<div style='margin-top:4px; color:#3c4043; line-height:150%'>{notes}</div></div>")
+        self.hist.setHtml("".join(parts))
+
+    def download(self):
+        if not self.latest:
+            return
+        if ask(self, "업데이트", f"새 버전 {self.latest['version']} 을 받아서 설치할까요?\n"
+                                "프로그램이 잠시 닫혔다가 다시 열립니다."):
+            self.main.do_update(self.latest)
 
 
 class ImportDialog(QDialog):

@@ -60,15 +60,68 @@ def read_github(repo: str) -> dict:
             rel = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            raise RuntimeError(f"GitHub 저장소({repo})에 공개된 Release 가 없습니다.")
+            raise RuntimeError("공개된 새 버전 정보가 없습니다.")
         raise
     exe = [a for a in rel.get("assets", []) if a.get("name", "").lower().endswith(".exe")]
     if not exe:
         raise RuntimeError("최신 Release 에 설치파일(.exe)이 첨부되어 있지 않습니다.")
     return {"version": rel.get("tag_name", "0").lstrip("vV"), "installer": exe[0]["name"],
             "url": exe[0]["browser_download_url"], "size": exe[0].get("size", 0),
-            "notes": (rel.get("body") or "").strip(), "date": (rel.get("published_at") or "")[:10],
+            "notes": clean_notes(rel.get("body") or ""), "date": (rel.get("published_at") or "")[:10],
             "_base": "github"}
+
+
+def clean_notes(text: str) -> str:
+    """사용자에게 보여 줄 변경 내용: 주소·링크·저장소 정보가 든 줄은 뺀다."""
+    out = []
+    for line in (text or "").replace("\r", "").split("\n"):
+        low = line.lower()
+        if any(k in low for k in ("http", "github", "full changelog", "@", "what's changed", "new contributors")):
+            continue
+        line = line.strip().lstrip("#").strip()
+        if line.startswith(("* ", "- ")):
+            line = "· " + line[2:]
+        out.append(line)
+    s = "\n".join(out).strip()
+    while "\n\n\n" in s:
+        s = s.replace("\n\n\n", "\n\n")
+    return s
+
+
+def read_history(src: str, limit=30) -> list:
+    """서버의 버전 이력 [{version, date, notes}] (최신 순)."""
+    repo = github_repo((src or "").strip())
+    if not repo:
+        m = read_manifest(src)
+        return m.get("history") or [{"version": m["version"], "date": m.get("date", ""), "notes": m.get("notes", "")}]
+    url = f"https://api.github.com/repos/{repo}/releases?per_page={limit}"
+    req = urllib.request.Request(url, headers={"User-Agent": "JichulUpdater",
+                                               "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        rels = json.loads(r.read().decode("utf-8"))
+    out = []
+    for rel in rels:
+        if rel.get("draft"):
+            continue
+        out.append({"version": rel.get("tag_name", "").lstrip("vV"),
+                    "date": (rel.get("published_at") or "")[:10],
+                    "notes": clean_notes(rel.get("body") or "")})
+    out.sort(key=lambda h: parse(h["version"]), reverse=True)
+    return out
+
+
+class HistoryThread(QThread):
+    done = Signal(object, str)  # (이력 목록 또는 None, 오류)
+
+    def __init__(self, src, parent=None):
+        super().__init__(parent)
+        self.src = src
+
+    def run(self):
+        try:
+            self.done.emit(read_history(self.src), "")
+        except Exception as e:  # noqa
+            self.done.emit(None, str(e))
 
 
 def read_manifest(src: str) -> dict:

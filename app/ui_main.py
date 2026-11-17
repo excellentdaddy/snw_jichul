@@ -416,7 +416,7 @@ class MainWindow(QMainWindow):
 
     # ================================================================ 업데이트
     def update_source(self):
-        return (self.store.get("update_source", None) or UPDATE_SOURCE or "").strip()
+        return (UPDATE_SOURCE or "").strip()  # 프로그램 안에 고정 (사용자에게 보이지 않음)
 
     def start_update_check(self, silent=True):
         """서버(GitHub 등)에 새 버전이 있는지 확인. silent 이면 새 버전이 있을 때만 알린다."""
@@ -424,7 +424,7 @@ class MainWindow(QMainWindow):
         src = self.update_source()
         if not src:
             if not silent:
-                info(self, "업데이트", "업데이트 위치가 설정되지 않았습니다.\n설정 > 업데이트에서 지정하세요.")
+                info(self, "업데이트", "업데이트를 확인할 수 없습니다.")
             return
         if silent and not self.store.get("auto_update_check", True):
             return
@@ -445,7 +445,7 @@ class MainWindow(QMainWindow):
             self.update_panel.show_result(m, err)
         if err:
             if not silent:
-                warn(self, "업데이트 확인 실패", f"서버에 연결하지 못했습니다.\n\n{err}")
+                warn(self, "업데이트 확인 실패", "업데이트 서버에 연결하지 못했습니다.\n인터넷 연결을 확인한 뒤 다시 시도하세요.")
             return
         if not updater.is_newer(m):
             if not silent:
@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa
             dlg.close()
             if not cancelled["v"]:
-                warn(self, "업데이트 실패", f"설치파일을 내려받지 못했습니다.\n\n{e}")
+                warn(self, "업데이트 실패", "새 버전을 내려받지 못했습니다.\n잠시 뒤 다시 시도하세요.")
             return
         dlg.close()
         try:

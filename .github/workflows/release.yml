@@ -43,10 +43,15 @@ jobs:
           PYTHONUTF8: "1"
         run: python tools/build.py --version ${{ steps.ver.outputs.version }}
 
+      - name: 변경 내용 (CHANGELOG.md)
+        env:
+          PYTHONUTF8: "1"
+        run: python tools/notes.py ${{ steps.ver.outputs.version }} > dist/release_notes.md
+
       - name: Release 올리기
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: 지출결의서 작성이 ${{ steps.ver.outputs.version }}
           files: dist/*.exe
-          generate_release_notes: true
+          body_path: dist/release_notes.md
