@@ -27,7 +27,6 @@ ACCOUNTS = ["가지급금", "검사수수료", "교육훈련비", "도서인쇄�
             "부재료", "상품", "세금과공과", "소모품비", "수선비", "수출제비용", "여비교통비",
             "외주가공비", "운반비", "원재료", "접대비", "지급수수료", "차량유지비", "통신비", "포장비"]
 
-MAX_LINES, MAX_CHARS = 9, 255
 AMT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원")
 AMT_VAT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원(\s?\(VAT 포함\)|\s?\(VAT포함\))?")
 VAT_RE = re.compile(r"\(?(VAT\s*포함)\)?", re.I)
@@ -698,7 +697,7 @@ class MainWindow(QMainWindow):
         b = QPushButton("기본 틀"); b.setObjectName("Small"); b.clicked.connect(self._template)
         self.lbl_cnt = QLabel(""); self.lbl_cnt.setObjectName("Hint")
         self.sp_size = QSpinBox(); self.sp_size.setRange(8, 15); self.sp_size.setValue(11)
-        self.sp_size.valueChanged.connect(self.changed)
+        self.sp_size.valueChanged.connect(self._detail_changed)  # 글자크기에 따라 들어가는 줄 수가 바뀜
         self.sp_size.setFixedWidth(64); self.sp_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.sp_size.setToolTip("내역 글자크기 (8~15, 기본 11)")
         h.addWidget(b); h.addWidget(self.lbl_cnt, 1)
@@ -829,6 +828,8 @@ class MainWindow(QMainWindow):
         self.approval.build(self.lay, pyd(self.de_date.date()))
         if hasattr(self, "coord") and self.pages.currentIndex() == PAGE_SETTINGS:
             self.coord.load()
+        if hasattr(self, "ed_detail"):
+            self._detail_changed()
         self.changed()
 
     def _nodate_toggled(self, on):
@@ -892,11 +893,17 @@ class MainWindow(QMainWindow):
         c = self.ed_detail.textCursor(); c.setPosition(len("1) 내역 : ")); self.ed_detail.setTextCursor(c)
         self.ed_detail.setFocus()
 
-    def _detail_changed(self):
-        t = self.ed_detail.toPlainText()
-        lines, chars = (len(t.split("\n")) if t else 0), len(t)
-        over = lines > MAX_LINES or chars > MAX_CHARS
-        self.lbl_cnt.setText(f"{lines}/{MAX_LINES}줄 · {chars}/{MAX_CHARS}자" + ("  — 칸을 넘칠 수 있습니다" if over else ""))
+    def detail_fit(self, text=None):
+        """(쓴 줄, 최대 줄) — 글자크기와 용지 칸 크기로 계산 (작게 하면 더 많이 들어감)."""
+        t = self.ed_detail.toPlainText() if text is None else text
+        return render.detail_fit(t, self.lay, self.sp_size.value(), self.adjust())
+
+    def _detail_changed(self, *_):
+        if not hasattr(self, "sp_size"):
+            return
+        used, cap = self.detail_fit()
+        over = used > cap
+        self.lbl_cnt.setText(f"{used}/{cap}줄" + ("  — 칸을 넘칩니다. 글자크기를 줄이세요" if over else ""))
         self.lbl_cnt.setObjectName("HintError" if over else "Hint")
         self.lbl_cnt.style().unpolish(self.lbl_cnt); self.lbl_cnt.style().polish(self.lbl_cnt)
         self.changed()
@@ -1001,10 +1008,10 @@ class MainWindow(QMainWindow):
         if not d["detail"] and not d["payee"]:
             warn(self, "입력 확인", "지출처나 내역을 입력하세요.")
             return False
-        t = d["detail"]
-        if len(t.split("\n")) > MAX_LINES or len(t) > MAX_CHARS:
-            return ask(self, "입력 확인", f"내역이 {MAX_LINES}줄 또는 {MAX_CHARS}자를 넘습니다.\n"
-                       "용지 칸을 넘칠 수 있습니다. 그래도 인쇄할까요?")
+        used, cap = self.detail_fit(d["detail"])
+        if used > cap:
+            return ask(self, "입력 확인", f"내역이 {used}줄로, 지금 글자크기에서 들어가는 {cap}줄을 넘습니다.\n"
+                       "글자크기를 줄이면 더 들어갑니다. 그래도 인쇄할까요?")
         return True
 
     def _record(self, d):

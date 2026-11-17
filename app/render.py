@@ -102,6 +102,66 @@ class _Adj:
         return Box(b.x0 + dx, b.y0 + dy, b.x1 + dx, b.y1 + dy)
 
 
+def detail_font(size, A) -> QFont:
+    """내역 글자: 화면의 글자크기(8~15, 엑셀 기준) × 배율 + 좌표설정의 내역 크기 보정분."""
+    pt = float(size or 11) * DETAIL_SCALE
+    dpt = A.size("detail") - ITEMS["detail"][1]
+    return font(pt + dpt)
+
+
+_LM_CACHE = {}
+
+
+def _line_metrics(f: QFont, b: Box):
+    """실제로 그렸을 때의 (첫 줄 높이, 줄 간격). 인쇄와 같은 방식(drawText)으로 잰다.
+
+    QFontMetrics 의 lineSpacing 은 실제 출력 줄 간격과 달라서(스캔 실측 11pt ≈ 4.5mm/줄) 직접 잰다.
+    """
+    key = (f.pixelSize(), f.family(), round(b.w, 2))
+    if key not in _LM_CACHE:
+        from PySide6.QtGui import QImage, QPainter
+        img = QImage(8, 8, QImage.Format.Format_RGB32)
+        p = QPainter(img)
+        p.setFont(f)
+        fl = int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap)
+        h1 = p.boundingRect(R(b), fl, "가").height()
+        h10 = p.boundingRect(R(b), fl, "\n".join(["가"] * 10)).height()
+        p.end()
+        _LM_CACHE[key] = (h1, (h10 - h1) / 9.0)
+    return _LM_CACHE[key]
+
+
+def detail_fit(text: str, lay: FormLayout, size, adjust=None):
+    """내역이 용지 칸에 몇 줄로 찍히는지와 최대 줄 수 (글자크기·칸 너비로 실제 계산).
+
+    반환: (쓴 줄 수, 들어가는 최대 줄 수). 긴 줄은 칸 너비에서 자동으로 넘어간 줄까지 센다.
+    """
+    from PySide6.QtGui import QTextLayout, QTextOption
+    A = _Adj(adjust)
+    b = A.box(lay.fields["detail"], "detail")
+    f = detail_font(size, A)
+    first_h, line_h = _line_metrics(f, b)
+    cap = max(1, 1 + int((b.h * U - first_h) // line_h))
+    width = b.w * U
+    opt = QTextOption(); opt.setWrapMode(QTextOption.WrapMode.WordWrap)
+    used = 0
+    for para in (text or "").rstrip("\n").split("\n") if text else []:
+        if not para:
+            used += 1
+            continue
+        tl = QTextLayout(para, f)
+        tl.setTextOption(opt)
+        tl.beginLayout()
+        while True:
+            ln = tl.createLine()
+            if not ln.isValid():
+                break
+            ln.setLineWidth(width)
+            used += 1
+        tl.endLayout()
+    return used, cap
+
+
 def _text(p, box: Box, text: str, f: QFont, align, color=Qt.GlobalColor.black):
     p.setFont(f)
     p.setPen(QColor(color))
@@ -148,9 +208,7 @@ def render(p, doc: dict, lay: FormLayout, guides=False, adjust=None, highlight=N
 
     if doc.get("detail"):
         b = A.box(F["detail"], "detail")
-        pt = float(doc.get("detail_size") or 11) * DETAIL_SCALE
-        dpt = A.size("detail") - ITEMS["detail"][1]  # 좌표설정의 내역 크기 보정분
-        p.setFont(font(pt + dpt))
+        p.setFont(detail_font(doc.get("detail_size"), A))
         p.setPen(Qt.GlobalColor.black)
         p.drawText(R(b), int(L | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), doc["detail"])
 
