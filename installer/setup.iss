@@ -31,7 +31,8 @@ UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 SetupIconFile=..\app\assets\icon.ico
 OutputDir={#OutputDir}
-OutputBaseFilename=지출결의서_설치_{#AppVersion}
+; GitHub 첨부파일 이름은 한글이 지워지므로 영문으로
+OutputBaseFilename=SnW_Jichul_Setup_{#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

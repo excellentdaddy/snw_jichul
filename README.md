@@ -9,7 +9,7 @@
 
 ## 설치
 
-[Releases](../../releases/latest) 에서 `지출결의서_설치_x.y.z.exe` 를 받아 실행합니다. 관리자 권한은 필요 없습니다.
+[Releases](../../releases/latest) 에서 `SnW_Jichul_Setup_x.y.z.exe` 를 받아 실행합니다. 관리자 권한은 필요 없습니다.
 작성이력·설정은 `내 문서\S&W 지출결의서\지출결의서.db` 에 저장되며, 프로그램을 지워도 남습니다.
 
 ## 새 버전 배포 (관리자)
@@ -25,7 +25,7 @@
 3. GitHub Actions 가 설치파일을 만들어 Release 에 올립니다 (약 5분).
 4. 각 PC 의 프로그램이 다음 실행 때 "새 버전이 있습니다"라고 알려 줍니다.
 
-이 PC 에서 직접 만들 때: `python tools/build.py` → `dist\지출결의서_설치_<버전>.exe`
+이 PC 에서 직접 만들 때: `python tools/build.py` → `dist\SnW_Jichul_Setup_<버전>.exe`
 
 ## 폴더
 

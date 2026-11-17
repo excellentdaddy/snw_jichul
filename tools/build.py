@@ -4,7 +4,7 @@
     python tools/build.py                 # app/version.py 의 버전으로 빌드
     python tools/build.py --version 1.3.1 # 버전을 지정 (version.py 도 그 값으로 바꾼다; GitHub 자동 빌드용)
 
-결과: dist/지출결의서_설치_<버전>.exe
+결과: dist/SnW_Jichul_Setup_<버전>.exe
 """
 import argparse
 import os
@@ -66,7 +66,7 @@ def main():
     iscc = find_iscc()
     subprocess.check_call([iscc, f"/DAppVersion={ver}", f"/DSourceDir={out_app}", f"/DOutputDir={DIST}",
                            os.path.join(ROOT, "installer", "setup.iss")])
-    setup = os.path.join(DIST, f"지출결의서_설치_{ver}.exe")
+    setup = os.path.join(DIST, f"SnW_Jichul_Setup_{ver}.exe")
     print(f"\n완료: {setup}  ({os.path.getsize(setup) / 1e6:.1f} MB)")
 
 
