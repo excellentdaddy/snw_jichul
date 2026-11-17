@@ -321,6 +321,27 @@ class PrintProgress(QWidget):
         QTimer.singleShot(1500, self.close)
 
 
+class Notice(QWidget):
+    """저장 같은 동작 뒤 창 가운데에 잠깐 뜨는 안내 카드 (1.6초 뒤 저절로 닫힘)."""
+
+    def __init__(self, parent, title, msg="", ok=True, ms=1600):
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.setObjectName("PrintCard")
+        self.setFixedWidth(360)
+        v = QVBoxLayout(self); v.setContentsMargins(22, 18, 22, 18); v.setSpacing(8)
+        t = QLabel(title); t.setObjectName("PrintDone" if ok else "PrintTitle")
+        v.addWidget(t)
+        if msg:
+            m = QLabel(msg); m.setObjectName("Hint"); m.setWordWrap(True); v.addWidget(m)
+        self.adjustSize()
+        g = parent.geometry()
+        self.move(g.x() + (g.width() - self.width()) // 2, g.y() + (g.height() - self.height()) // 2)
+        self.show(); self.raise_()
+        QTimer.singleShot(ms, self.close)
+
+
 # ---------------------------------------------------------------- 결재란 (실제 양식처럼 가로 배치)
 class ApprovalPanel(QWidget):
     def __init__(self, on_change):
@@ -471,6 +492,8 @@ class ApprovalPanel(QWidget):
 
 # ---------------------------------------------------------------- 메인 창
 class MainWindow(QMainWindow):
+    loaded_id = None  # 불러온(또는 방금 저장·인쇄한) 이력 id
+
     def __init__(self, store):
         super().__init__()
         self.store = store
@@ -1195,12 +1218,14 @@ class MainWindow(QMainWindow):
         self.ed_detail.clear()
         self.sp_size.setValue(11)
         self.images.clear(); self.preview.sel = -1
+        self.loaded_id = None
         self.approval.reset(today)
         self._loading = False
         self._detail_changed()
         self.ed_payee.setFocus()
 
     def load_record(self, rec):
+        self.loaded_id = rec.get("id")  # 이 상태에서 [저장]하면 이 이력에 덮어쓴다
         self._loading = True
         today = date.today()  # 기존 엑셀처럼 날짜는 오늘로
         self.de_date.blockSignals(True); self.de_date.setDate(qd(today)); self.de_date.blockSignals(False)
@@ -1278,10 +1303,19 @@ class MainWindow(QMainWindow):
         if not d["detail"] and not d["payee"]:
             warn(self, "저장", "지출처나 내역을 입력하세요.")
             return
-        added = self.store.add(self._record(d), images=self._images_payload())
+        rec, imgs = self._record(d), self._images_payload()
+        if self.loaded_id and self.store.update(self.loaded_id, rec, images=imgs):
+            title, msg = "✓ 저장했습니다", "불러온 이력을 지금 내용으로 덮어썼습니다."
+        else:
+            added = self.store.add(rec, images=imgs)
+            self.loaded_id = self.store.find_id(rec)
+            title, msg = ("✓ 저장했습니다", "작성이력에 새로 저장했습니다.") if added else \
+                         ("✓ 저장했습니다", "같은 내용의 이력에 덮어썼습니다.")
+            if not added and self.loaded_id:
+                self.store.update(self.loaded_id, rec, images=imgs)
         self.load_history()
-        self.toast("작성이력에 저장했습니다." if added else
-                   ("이미지를 저장했습니다." if self.images else "같은 내용이 이미 저장돼 있습니다."))
+        self.toast(f"{title} — {msg}")
+        Notice(self, title, msg)
 
     def make_printer(self):
         pr = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -1336,6 +1370,7 @@ class MainWindow(QMainWindow):
             return
         if self.print_doc(d):
             added = self.store.add(self._record(d), images=self._images_payload())
+            self.loaded_id = self.store.find_id(self._record(d))  # 이후 저장은 방금 인쇄한 이력에 덮어씀
             self.load_history()
             self.toast("인쇄했습니다." + (" 작성이력에 저장했습니다." if added else ""), 5000)
 

@@ -139,6 +139,26 @@ class Store:
             self.con.commit()
         return True
 
+    def find_id(self, rec: dict):
+        r = self._norm(rec)
+        row = self.con.execute(
+            "SELECT id FROM records WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?"
+            " ORDER BY id DESC LIMIT 1",
+            (r["date"], r["payee"], r["amount"], r["name"], r["detail"])).fetchone()
+        return row[0] if row else None
+
+    def update(self, rid: int, rec: dict, images=None) -> bool:
+        """그 이력을 지금 내용(이미지 포함, 없으면 이미지 지움)으로 덮어쓴다. 이력이 없으면 False."""
+        r = self._norm(rec)
+        cur = self.con.execute(
+            "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?"
+            " WHERE id=?",
+            (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"], r["account"],
+             self._attach_json(images), rid))
+        self._clean_images()
+        self.con.commit()
+        return cur.rowcount > 0
+
     def images_of(self, rec: dict):
         """이력의 첨부 이미지 [{"png": bytes, x, y, w, h}] (불러올 때만 읽는다)."""
         try:
