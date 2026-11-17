@@ -191,9 +191,28 @@ def _load_korean(app):
     return len(app._translators)
 
 
+def _no_wheel_spin(app):
+    """마우스 휠로 숫자·날짜 칸(스핀 단추) 값이 바뀌지 않게 한다. 휠은 바깥(목록·화면 스크롤)으로 넘긴다."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QAbstractSpinBox, QApplication
+
+    class _Filter(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.Wheel and isinstance(obj, QAbstractSpinBox):
+                par = obj.parentWidget()
+                if par is not None:
+                    QApplication.sendEvent(par, ev)
+                return True
+            return False
+
+    app._no_wheel = _Filter(app)
+    app.installEventFilter(app._no_wheel)
+
+
 def apply(app):
     """Windows 다크 모드여도 항상 밝게 보이도록 팔레트를 고정한다."""
     from store import resource_path
+    _no_wheel_spin(app)
     app.setStyle("Fusion")
     has_font = _load_fonts()
     _load_korean(app)

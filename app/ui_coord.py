@@ -1,4 +1,4 @@
-"""설정 > 좌표 설정: 칸별 위치·글자크기 + 프린터 전체 보정(이동·배율)."""
+"""설정 > 좌표 설정: 프린터별 영점 보정 + 칸별 위치·글자크기."""
 import copy
 
 from PySide6.QtCore import Qt
@@ -25,30 +25,22 @@ class CoordPanel(QWidget):
         left = QVBoxLayout(leftw); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(12)
         root.addWidget(leftw)
 
-        # ---- 전체 보정 ----
-        gw = QWidget(); gl = QGridLayout(gw); gl.setContentsMargins(0, 0, 0, 0)
-        gl.setHorizontalSpacing(10); gl.setVerticalSpacing(8)
+        # ---- 프린터별 영점 보정 (영점조정 창과 같은 모양, 바로 저장) ----
         from ui_dialogs import fill_printers
+        from ui_zero import TIP, ZeroPad
+        gw = QWidget(); gl = QVBoxLayout(gw); gl.setContentsMargins(0, 0, 0, 0); gl.setSpacing(12)
+        hp = QHBoxLayout(); hp.setSpacing(10)
+        lb = QLabel("프린터"); lb.setObjectName("FieldLabel")
         self.cb_pr = QComboBox()
         fill_printers(self.cb_pr)
         self.cb_pr.currentIndexChanged.connect(self._printer_pick)
-        lb = QLabel("프린터"); lb.setObjectName("FieldLabel")
-        gl.addWidget(lb, 0, 0); gl.addWidget(self.cb_pr, 0, 1, 1, 3)
-        self.sp = {}
-        for i, (k, label, lo, hi, step, suf) in enumerate((
-            ("dx", "좌우 이동", -20, 20, 0.5, " mm"),
-            ("dy", "상하 이동", -20, 20, 0.5, " mm"),
-            ("sx", "가로 배율", 90, 110, 0.1, " %"),
-            ("sy", "세로 배율", 90, 110, 0.1, " %"),
-        )):
-            s = QDoubleSpinBox(); s.setRange(lo, hi); s.setSingleStep(step); s.setDecimals(1); s.setSuffix(suf)
-            s.valueChanged.connect(lambda v, kk=k: self._glob(kk, v))
-            self.sp[k] = s
-            lb = QLabel(label); lb.setObjectName("FieldLabel")
-            gl.addWidget(lb, 1 + i // 2, (i % 2) * 2); gl.addWidget(s, 1 + i // 2, (i % 2) * 2 + 1)
-        left.addWidget(card(gw, "프린터별 영점 · 배율",
-                            "고른 프린터에만 적용됩니다. 전체가 한쪽으로 밀리면 '이동'(+는 오른쪽·아래), "
-                            "아래로 갈수록 점점 어긋나면 '배율'을 조정하세요."))
+        bz = QPushButton("0점으로"); bz.setObjectName("Small")
+        hp.addWidget(lb); hp.addWidget(self.cb_pr, 1); hp.addWidget(bz)
+        gl.addLayout(hp)
+        self.zpad = ZeroPad(main, main.calib_key(self.cb_pr.currentData()))
+        bz.clicked.connect(self.zpad.zero)
+        gl.addWidget(self.zpad)
+        left.addWidget(card(gw, "프린터별 영점 보정", TIP.replace("\n", " ")))
 
         # ---- 칸별 보정 ----
         tw = QWidget(); tv = QVBoxLayout(tw); tv.setContentsMargins(0, 0, 0, 0); tv.setSpacing(8)
@@ -122,10 +114,7 @@ class CoordPanel(QWidget):
         self.cb_pr.blockSignals(True)
         self.cb_pr.setCurrentIndex(max(self.cb_pr.findData(cur), 0))
         self.cb_pr.blockSignals(False)
-        self.pkey = self.main.calib_key(self.cb_pr.currentData())
-        self.glob = self.main.get_calib(self.pkey)
-        for k, s in self.sp.items():
-            s.setValue(self.glob[k])
+        self.zpad.set_key(self.main.calib_key(self.cb_pr.currentData()))
         for k, (sx, sy, sz) in self.cells.items():
             a = self.adj.get(k, {})
             sx.setValue(a.get("dx", 0.0)); sy.setValue(a.get("dy", 0.0)); sz.setValue(a.get("size", render.ITEMS[k][1]))
@@ -152,23 +141,7 @@ class CoordPanel(QWidget):
         self._mark(True); self._refresh()
 
     def _printer_pick(self, _):
-        if self.dirty and not ask(self, "좌표 설정", "저장하지 않은 변경이 있습니다.\n프린터를 바꾸기 전에 저장할까요?"):
-            pass
-        elif self.dirty:
-            self.save()
-        self.pkey = self.main.calib_key(self.cb_pr.currentData())
-        self.glob = self.main.get_calib(self.pkey)
-        self._loading = True
-        for k, s in self.sp.items():
-            s.setValue(self.glob[k])
-        self._loading = False
-        self._mark(False)
-
-    def _glob(self, k, v):
-        if self._loading:
-            return
-        self.glob[k] = float(v)
-        self._mark(True); self._refresh()
+        self.zpad.set_key(self.main.calib_key(self.cb_pr.currentData()))
 
     def _nudge(self, dx, dy):
         k = self.current()
@@ -184,7 +157,7 @@ class CoordPanel(QWidget):
 
     def _reset_all(self):
         if not ask(self, "전체 초기화", "모든 칸의 위치·글자크기를 기본값으로 되돌릴까요?\n"
-                   "(프린터 전체 보정 값은 그대로 둡니다)"):
+                   "(프린터 영점 보정 값은 그대로 둡니다)"):
             return
         for k, (sx, sy, sz) in self.cells.items():
             sx.setValue(0); sy.setValue(0); sz.setValue(render.ITEMS[k][1])
@@ -204,7 +177,6 @@ class CoordPanel(QWidget):
 
     def save(self):
         self.store.set(f"adjust_{self.lay.key}", self._clean())
-        self.main.set_calib(self.pkey, self.glob)
         self._mark(False)
         self.main.refresh_preview()
         self.main.toast("좌표 설정을 저장했습니다.")
