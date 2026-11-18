@@ -387,7 +387,7 @@ class ImportDialog(QDialog):
         added, skipped = self.store.add_many(self.recs, src)
         self.imported += added
         info(self, "가져오기 완료", f"새로 추가: {added:,}건\n이미 있어서 건너뜀(중복): {skipped:,}건")
-        self.btn_ok.setEnabled(False)
+        self.accept()  # 완료 안내를 확인하면 가져오기 창도 닫는다
 
 
 def _col_letter(i):

@@ -5,13 +5,13 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QBuffer, QByteArray, QDate, QIODevice, QMarginsF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QPen, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QDate, QEvent, QIODevice, QMarginsF, QObject, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QPen, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QSplitter, QCheckBox, QComboBox, QCompleter, QDateEdit, QFileDialog, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
-    QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QStackedWidget, QStyle, QStyledItemDelegate, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -319,6 +319,59 @@ class PrintProgress(QWidget):
         self.msg.setText("Windows 인쇄 대기열에 전송을 마쳤습니다.")
         self._pump()
         QTimer.singleShot(1500, self.close)
+
+
+class _XDelegate(QStyledItemDelegate):
+    """콤보 목록 항목 오른쪽에 ✕ 를 그린다 (마우스가 올라간 줄은 빨갛게)."""
+    W = 28
+
+    def paint(self, p, opt, idx):
+        super().paint(p, opt, idx)
+        r = QRect(opt.rect.right() - self.W, opt.rect.top(), self.W, opt.rect.height())
+        hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
+        p.save()
+        p.setPen(QColor("#d93025" if hover else "#9aa0a6"))
+        f = QFont(opt.font); f.setPixelSize(13); f.setBold(hover); p.setFont(f)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, "✕")
+        p.restore()
+
+
+class _XFilter(QObject):
+    """✕ 위를 누르면 그 항목을 지우고, 목록은 닫지 않는다."""
+
+    def __init__(self, combo, on_delete):
+        super().__init__(combo)
+        self.combo, self.on_delete = combo, on_delete
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+                         QEvent.Type.MouseButtonDblClick):
+            view = self.combo.view()
+            pos = ev.position().toPoint()
+            idx = view.indexAt(pos)
+            if idx.isValid() and pos.x() >= view.visualRect(idx).right() - _XDelegate.W:
+                if ev.type() == QEvent.Type.MouseButtonRelease:
+                    text = idx.data()
+                    cur = self.combo.currentText()
+                    self.combo.blockSignals(True)
+                    self.combo.removeItem(idx.row())
+                    self.combo.setCurrentText(cur)
+                    self.combo.blockSignals(False)
+                    self.on_delete(text)
+                    if self.combo.count() == 0:
+                        self.combo.hidePopup()
+                return True
+        return False
+
+
+def deletable_combo(combo, on_delete):
+    """편집 가능한 콤보의 목록 항목마다 ✕ 삭제 단추를 단다."""
+    view = combo.view()  # 팝업을 먼저 만들어 두어야 우리 필터가 먼저 불린다
+    view.setItemDelegate(_XDelegate(view))
+    view.setMouseTracking(True)
+    view.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+    view.viewport().installEventFilter(_XFilter(combo, on_delete))
+    combo.setToolTip("목록의 ✕ 를 누르면 그 이름을 목록에서 뺍니다 (작성이력은 그대로)")
 
 
 class Notice(QWidget):
@@ -866,6 +919,7 @@ class MainWindow(QMainWindow):
         self.de_date.dateChanged.connect(self._date_changed)
         self.ed_name = QComboBox(); self.ed_name.setEditable(True)
         self.ed_name.currentTextChanged.connect(self.changed)
+        deletable_combo(self.ed_name, self._name_deleted)
         g.addWidget(field_label("작성일"), 0, 0); g.addWidget(self.de_date, 0, 1)
         g.addWidget(field_label("수령인"), 0, 2); g.addWidget(self.ed_name, 0, 3)
 
@@ -1195,6 +1249,10 @@ class MainWindow(QMainWindow):
             self._set_amount_text(int(round(r)))
             self._amount_edited("")
 
+    def _name_deleted(self, name):
+        self.store.hide_name(name)
+        self.toast(f"수령인 목록에서 '{name}'을(를) 뺐습니다. (작성이력은 그대로, 이 이름으로 다시 저장하면 목록에 다시 나옵니다)", 6000)
+
     def _payee_picked(self, text):
         rec = self.store.latest_for_payee(text)
         if not rec:
@@ -1322,12 +1380,27 @@ class MainWindow(QMainWindow):
         name = self.store.get("printer", "")
         if name:
             pr.setPrinterName(name)
-        pr.setPageSize(QPageSize(QPageSize.PageSizeId.A5))
+        self.force_a5(pr)
+        pr.setDocName("지출결의서")
+        return pr
+
+    @staticmethod
+    def force_a5(pr):
+        """용지를 A5 세로로 강제한다 (프린터 기본값이 A4여도). 인쇄 대화상자를 거친 뒤에도 다시 부른다."""
+        from PySide6.QtCore import QSizeF
+        if not pr.setPageSize(QPageSize(QPageSize.PageSizeId.A5)) or \
+                pr.pageLayout().pageSize().id() != QPageSize.PageSizeId.A5:
+            pr.setPageSize(QPageSize(QSizeF(148, 210), QPageSize.Unit.Millimeter, "A5",
+                                     QPageSize.SizeMatchPolicy.FuzzyMatch))
         pr.setPageOrientation(QPageLayout.Orientation.Portrait)
         pr.setFullPage(True)
         pr.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Millimeter)
-        pr.setDocName("지출결의서")
-        return pr
+
+    @staticmethod
+    def open_printer_prefs(name):
+        """Windows 의 '인쇄 기본 설정' 창 (용지 크기·맞춤 인쇄 등 드라이버 설정)."""
+        import subprocess
+        subprocess.Popen(["rundll32", "printui.dll,PrintUIEntry", "/e", "/n", name])
 
     def print_doc(self, d, guides=False, ask_dialog=None):
         pr = self.make_printer()
@@ -1337,6 +1410,7 @@ class MainWindow(QMainWindow):
             dlg.setWindowTitle("인쇄")
             if dlg.exec() != QPrintDialog.DialogCode.Accepted:
                 return False
+            self.force_a5(pr)  # 대화상자에서 A4 로 바뀌었어도 A5 로
         prog = PrintProgress(self, pr.printerName() or "기본 프린터")
         prog.step(15, "인쇄 준비 중…")
         p = QPainter()
@@ -1344,6 +1418,19 @@ class MainWindow(QMainWindow):
             prog.close()
             warn(self, "인쇄 실패", "프린터를 열 수 없습니다.\n설정 > 프린터 · 기본값에서 프린터를 확인하세요.")
             return False
+        paper = pr.paperRect(QPrinter.Unit.Millimeter)  # 프린터 드라이버가 실제로 받아들인 용지
+        if paper.width() > 160 or paper.height() > 222:
+            prog.hide()
+            name = pr.printerName() or "기본 프린터"
+            if ask(self, "용지 크기 확인",
+                   f"프린터({name})가 A5가 아닌 {paper.width():.0f}×{paper.height():.0f}mm 용지로 인쇄하려고 합니다.\n"
+                   "프린터 설정에서 용지가 A4로 고정돼 있거나 '용지에 맞춤(확대/축소)'이 켜져 있으면 이렇게 됩니다.\n\n"
+                   "[예] 인쇄를 취소하고 프린터의 '인쇄 기본 설정' 창을 엽니다. 용지 크기를 A5로 바꿔 주세요.\n"
+                   "[아니요] 그대로 인쇄합니다."):
+                pr.abort(); p.end(); prog.close()
+                self.open_printer_prefs(name)
+                return False
+            prog.show()
         prog.step(45, "지출결의서를 그리는 중…")
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         # fullPage 모드: 원점 = 용지 왼쪽 위 모서리. 0.01mm 단위로 맞춘다.

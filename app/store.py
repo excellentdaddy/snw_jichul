@@ -121,6 +121,8 @@ class Store:
         """새로 추가하면 True. 같은 내용이 이미 있으면 False (이미지가 있으면 그 이력의 이미지만 갱신)."""
         r = self._norm(rec)
         attach = self._attach_json(images)
+        if source == "직접작성":
+            self._unhide(r["name"])
         if self.exists(r):
             if attach:
                 self.con.execute(
@@ -150,6 +152,7 @@ class Store:
     def update(self, rid: int, rec: dict, images=None) -> bool:
         """그 이력을 지금 내용(이미지 포함, 없으면 이미지 지움)으로 덮어쓴다. 이력이 없으면 False."""
         r = self._norm(rec)
+        self._unhide(r["name"])
         cur = self.con.execute(
             "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?"
             " WHERE id=?",
@@ -211,8 +214,20 @@ class Store:
             "SELECT payee FROM records WHERE payee<>'' GROUP BY payee ORDER BY MAX(date) DESC")]
 
     def names(self):
+        hidden = set(self.get("hidden_names", []) or [])
         return [r[0] for r in self.con.execute(
-            "SELECT name FROM records WHERE name<>'' GROUP BY name ORDER BY COUNT(*) DESC")]
+            "SELECT name FROM records WHERE name<>'' GROUP BY name ORDER BY COUNT(*) DESC") if r[0] not in hidden]
+
+    def hide_name(self, name):
+        """수령인 목록에서만 뺀다 (이력은 그대로). 그 이름으로 다시 저장하면 목록에 다시 나온다."""
+        h = list(self.get("hidden_names", []) or [])
+        if name and name not in h:
+            self.set("hidden_names", h + [name])
+
+    def _unhide(self, name):
+        h = list(self.get("hidden_names", []) or [])
+        if name in h:
+            h.remove(name); self.set("hidden_names", h)
 
     def latest_for_payee(self, payee: str):
         r = self.con.execute(
