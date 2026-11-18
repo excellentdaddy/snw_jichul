@@ -312,11 +312,11 @@ class PrintProgress(QWidget):
         self.msg.setText(text)
         self._pump()
 
-    def done(self):
+    def done(self, msg="Windows 인쇄 대기열에 전송을 마쳤습니다."):
         self.bar.setValue(100)
         self.title.setText("✓ 프린터로 보냈습니다")
         self.title.setObjectName("PrintDone"); self.title.style().unpolish(self.title); self.title.style().polish(self.title)
-        self.msg.setText("Windows 인쇄 대기열에 전송을 마쳤습니다.")
+        self.msg.setText(msg)
         self._pump()
         QTimer.singleShot(1500, self.close)
 
@@ -466,8 +466,9 @@ class ApprovalPanel(QWidget):
     def set_owner_name(self, name):
         self.owner_name = name
         if hasattr(self, "chk_owner") and self.lay:
-            who = f" ({name})" if name else ""
-            self.chk_owner.setText(f"{self.lay.cols[-1]} 본인 건{who} · 나머지 칸 사선")
+            last = self.lay.cols[-1]
+            self.chk_owner.setText(f"{last} 전결")
+            self.chk_owner.setToolTip(f"{last} 전결: {last} 칸만 도장, 나머지 칸은 모두 사선")
 
     def set_dates(self, d: date):
         for de, _, _ in self.rows:
@@ -809,8 +810,19 @@ class MainWindow(QMainWindow):
         pv_card = card(self.preview, "미리보기", margins=(10, 10, 10, 10),
                        extra=[self.cb_layout, self.cb_printer, self.btn_zero])
 
+        # 미리보기 아래: 첨부파일 (작은 칸, 1~2줄)
+        from ui_files import AttachPanel
+        self.attach_panel = AttachPanel(self)
+        self.attach_panel.changed.connect(self.changed)
+        mid = QWidget(); mv = QVBoxLayout(mid); mv.setContentsMargins(0, 0, 0, 0); mv.setSpacing(12)
+        mv.addWidget(pv_card, 1)
+        att_card = card(self.attach_panel, "첨부파일 (A4로 같이 인쇄)", margins=(12, 8, 12, 8),
+                        extra=[self.attach_panel.count_label])
+        att_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)  # 내용 높이만큼만
+        mv.addWidget(att_card)
+
         split = QSplitter(); split.setChildrenCollapsible(False); split.setHandleWidth(14)
-        split.addWidget(pv_card)
+        split.addWidget(mid)
         quick = self._build_quick()
         split.addWidget(card(quick, "작성이력", extra=[self.lbl_qcount]))
         split.setStretchFactor(0, 5); split.setStretchFactor(1, 4)
@@ -883,6 +895,8 @@ class MainWindow(QMainWindow):
                    + (f"<br>비고: {r['note']}" if r["note"] else ""))
             first = (r["detail"] or "").split("\n")[0]
             first = first.split(":", 1)[1].strip() if ":" in first else first
+            if r.get("files"):
+                first = "[첨부] " + first
             if r.get("attach"):
                 first = "[이미지] " + first
             for c, val in enumerate([r["date"], r["payee"], f"{r['amount']:,}", first]):
@@ -983,18 +997,20 @@ class MainWindow(QMainWindow):
     def _build_settings_page(self):
         from ui_coord import CoordPanel
         from ui_dialogs import DataPanel, SettingsPanel, UpdatePanel
+        from ui_files import FilesPanel
         page = QWidget()
         h = QHBoxLayout(page); h.setContentsMargins(16, 14, 16, 10); h.setSpacing(14)
         self.side = QListWidget(); self.side.setObjectName("SideNav"); self.side.setFixedWidth(190)
-        for text in ("좌표 설정", "프린터 · 기본값", "데이터", "업데이트"):
+        for text in ("좌표 설정", "프린터 · 기본값", "첨부파일 관리", "데이터", "업데이트"):
             QListWidgetItem(text, self.side)
         h.addWidget(self.side)
         self.set_stack = QStackedWidget()
         self.coord = CoordPanel(self)
         self.settings_panel = SettingsPanel(self)
+        self.files_panel = FilesPanel(self)
         self.data_panel = DataPanel(self)
         self.update_panel = UpdatePanel(self)
-        for wdg in (self.coord, self.settings_panel, self.data_panel, self.update_panel):
+        for wdg in (self.coord, self.settings_panel, self.files_panel, self.data_panel, self.update_panel):
             self.set_stack.addWidget(wdg)
         h.addWidget(self.set_stack, 1)
         self.side.currentRowChanged.connect(self._side_changed)
@@ -1005,8 +1021,13 @@ class MainWindow(QMainWindow):
         if self.set_stack.currentIndex() == 0 and r != 0:
             self.coord.confirm_leave()
         self.set_stack.setCurrentIndex(r)
-        if r == 2:
+        if self.set_stack.widget(r) is self.data_panel:
             self.data_panel.refresh()
+
+    def open_files_settings(self):
+        """작성 화면 [추가 ▾] > 첨부파일 관리… → 설정 > 첨부파일."""
+        self.go(PAGE_SETTINGS)
+        self.side.setCurrentRow(self.set_stack.indexOf(self.files_panel))
 
     def _printer_changed(self, _):
         self.store.set("printer", self.cb_printer.currentData())
@@ -1276,6 +1297,7 @@ class MainWindow(QMainWindow):
         self.ed_detail.clear()
         self.sp_size.setValue(11)
         self.images.clear(); self.preview.sel = -1
+        self.attach_panel.set_items([])
         self.loaded_id = None
         self.approval.reset(today)
         self._loading = False
@@ -1297,6 +1319,7 @@ class MainWindow(QMainWindow):
             detail = (detail + "\n" if detail else "") + note  # 예전 비고(계좌 등)는 내역 맨 아래 줄로
         self.ed_detail.setPlainText(detail)
         self._set_images(self.store.images_of(rec))  # 저장해 둔 이미지(엑셀 표 등)도 같은 자리에
+        self.attach_panel.set_items(self.store.files_of(rec))  # 첨부파일도 같이
         self.chk_vat.setChecked(bool(re.search(r"vat\s*포함", rec.get("detail") or "", re.I)))
         self.approval.reset(today)
         if self.store.get("auto_jeon_200k", False) and int(rec.get("amount") or 0) <= 200000:
@@ -1361,16 +1384,16 @@ class MainWindow(QMainWindow):
         if not d["detail"] and not d["payee"]:
             warn(self, "저장", "지출처나 내역을 입력하세요.")
             return
-        rec, imgs = self._record(d), self._images_payload()
-        if self.loaded_id and self.store.update(self.loaded_id, rec, images=imgs):
+        rec, imgs, files = self._record(d), self._images_payload(), self.attach_panel.payload()
+        if self.loaded_id and self.store.update(self.loaded_id, rec, images=imgs, files=files):
             title, msg = "✓ 저장했습니다", "불러온 이력을 지금 내용으로 덮어썼습니다."
         else:
-            added = self.store.add(rec, images=imgs)
+            added = self.store.add(rec, images=imgs, files=files)
             self.loaded_id = self.store.find_id(rec)
             title, msg = ("✓ 저장했습니다", "작성이력에 새로 저장했습니다.") if added else \
                          ("✓ 저장했습니다", "같은 내용의 이력에 덮어썼습니다.")
             if not added and self.loaded_id:
-                self.store.update(self.loaded_id, rec, images=imgs)
+                self.store.update(self.loaded_id, rec, images=imgs, files=files)
         self.load_history()
         self.toast(f"{title} — {msg}")
         Notice(self, title, msg)
@@ -1402,7 +1425,7 @@ class MainWindow(QMainWindow):
         import subprocess
         subprocess.Popen(["rundll32", "printui.dll,PrintUIEntry", "/e", "/n", name])
 
-    def print_doc(self, d, guides=False, ask_dialog=None):
+    def print_doc(self, d, guides=False, ask_dialog=None, files=None):
         pr = self.make_printer()
         ask_dialog = self.store.get("show_dialog", False) if ask_dialog is None else ask_dialog
         if ask_dialog:
@@ -1440,12 +1463,28 @@ class MainWindow(QMainWindow):
         p.translate(c["dx"] * render.U, c["dy"] * render.U)
         p.scale(c["sx"] / 100.0, c["sy"] / 100.0)
         render.render(p, d, self.lay, guides=guides, adjust=self.adjust())
-        prog.step(80, "프린터로 보내는 중…")
+        prog.step(80 if not files else 50, "프린터로 보내는 중…")
         ok = p.end()
         if not ok:
             prog.close()
             warn(self, "인쇄 실패", "프린터로 보내지 못했습니다.\n프린터가 켜져 있는지, 연결 상태를 확인하세요.")
             return False
+        if files:
+            import attach
+            apr = attach.make_printer(pr.printerName())  # 첨부는 항상 A4
+            npages = max(1, sum(f["pages"] for f in files))
+            done = [0]
+
+            def step(i, n, name):
+                done[0] += 1
+                prog.step(50 + int(45 * done[0] / npages), f"첨부파일 인쇄 중… {name} ({done[0]}/{npages}쪽)")
+            sent, err = attach.print_files(apr, files, self.store.file_data, step)
+            if err:
+                prog.close()
+                warn(self, "첨부 인쇄 실패", f"지출결의서는 보냈지만 첨부파일을 인쇄하지 못했습니다.\n{err}")
+                return True
+            prog.done(f"지출결의서(A5) 1장 + 첨부 A4 {sent}쪽을 인쇄 대기열에 보냈습니다.")
+            return True
         prog.done()
         return True
 
@@ -1455,8 +1494,8 @@ class MainWindow(QMainWindow):
         d = self.doc()
         if not self._validate(d):
             return
-        if self.print_doc(d):
-            added = self.store.add(self._record(d), images=self._images_payload())
+        if self.print_doc(d, files=self.attach_panel.to_print()):
+            added = self.store.add(self._record(d), images=self._images_payload(), files=self.attach_panel.payload())
             self.loaded_id = self.store.find_id(self._record(d))  # 이후 저장은 방금 인쇄한 이력에 덮어씀
             self.load_history()
             self.toast("인쇄했습니다." + (" 작성이력에 저장했습니다." if added else ""), 5000)

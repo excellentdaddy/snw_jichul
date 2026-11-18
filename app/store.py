@@ -79,11 +79,17 @@ class Store:
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
             -- 첨부 이미지(엑셀 표 등): 내용 해시로 한 번만 저장
             CREATE TABLE IF NOT EXISTS images (hash TEXT PRIMARY KEY, png BLOB);
+            -- 첨부파일 보관함(PDF·그림): 지출결의서 뒤에 같이 인쇄. 내용 해시로 한 번만 저장
+            CREATE TABLE IF NOT EXISTS files (
+                hash TEXT PRIMARY KEY, name TEXT, ext TEXT, data BLOB, pages INTEGER, added TEXT
+            );
             """
         )
         cols = [r[1] for r in self.con.execute("PRAGMA table_info(records)")]
         if "attach" not in cols:  # 예전 데이터 파일에 첨부 칸 추가
             self.con.execute("ALTER TABLE records ADD COLUMN attach TEXT")
+        if "files" not in cols:  # 첨부파일 목록 [{"hash", "print"}]
+            self.con.execute("ALTER TABLE records ADD COLUMN files TEXT")
         self.con.commit()
 
     # ---------- 작성이력 ----------
@@ -117,25 +123,29 @@ class Store:
             out.append({"hash": h, **{k: round(float(im[k]), 2) for k in ("x", "y", "w", "h")}})
         return json.dumps(out)
 
-    def add(self, rec: dict, source="직접작성", commit=True, images=None) -> bool:
-        """새로 추가하면 True. 같은 내용이 이미 있으면 False (이미지가 있으면 그 이력의 이미지만 갱신)."""
+    def add(self, rec: dict, source="직접작성", commit=True, images=None, files=None) -> bool:
+        """새로 추가하면 True. 같은 내용이 이미 있으면 False.
+        직접 작성한 것이면 그 이력의 이미지·첨부파일을 지금 것으로 갱신한다 (가져오기는 건드리지 않음)."""
         r = self._norm(rec)
         attach = self._attach_json(images)
-        if source == "직접작성":
+        fj = self._files_json(files)
+        direct = source == "직접작성"
+        if direct:
             self._unhide(r["name"])
         if self.exists(r):
-            if attach:
+            if direct:
                 self.con.execute(
-                    "UPDATE records SET attach=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
-                    (attach, r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
+                    "UPDATE records SET attach=?, files=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
+                    (attach, fj, r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
+                self._clean_images()
                 if commit:
                     self.con.commit()
             return False
         self.con.execute(
-            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created,attach)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created,attach,files)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"],
-             r["account"], source, datetime.now().isoformat(timespec="seconds"), attach),
+             r["account"], source, datetime.now().isoformat(timespec="seconds"), attach, fj),
         )
         if commit:
             self.con.commit()
@@ -149,15 +159,15 @@ class Store:
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"])).fetchone()
         return row[0] if row else None
 
-    def update(self, rid: int, rec: dict, images=None) -> bool:
+    def update(self, rid: int, rec: dict, images=None, files=None) -> bool:
         """그 이력을 지금 내용(이미지 포함, 없으면 이미지 지움)으로 덮어쓴다. 이력이 없으면 False."""
         r = self._norm(rec)
         self._unhide(r["name"])
         cur = self.con.execute(
-            "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?"
+            "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?, files=?"
             " WHERE id=?",
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"], r["account"],
-             self._attach_json(images), rid))
+             self._attach_json(images), self._files_json(files), rid))
         self._clean_images()
         self.con.commit()
         return cur.rowcount > 0
@@ -173,6 +183,80 @@ class Store:
             row = self.con.execute("SELECT png FROM images WHERE hash=?", (it.get("hash"),)).fetchone()
             if row:
                 out.append({"png": bytes(row[0]), **{k: it[k] for k in ("x", "y", "w", "h")}})
+        return out
+
+    # ---------- 첨부파일 보관함 ----------
+    @staticmethod
+    def _files_json(files):
+        """files: [{"hash", "print"}] → 이력에 저장할 JSON (없으면 None)."""
+        if not files:
+            return None
+        return json.dumps([{"hash": f["hash"], "print": bool(f.get("print", True))} for f in files])
+
+    def add_file(self, name, ext, data: bytes, pages: int) -> str:
+        """보관함에 넣고 해시를 돌려준다. 같은 내용이 이미 있으면 그대로 쓴다."""
+        import hashlib
+        h = hashlib.sha1(data).hexdigest()
+        self.con.execute("INSERT OR IGNORE INTO files(hash,name,ext,data,pages,added) VALUES(?,?,?,?,?,?)",
+                         (h, name, ext.lower(), data, int(pages), datetime.now().isoformat(timespec="seconds")))
+        self.con.commit()
+        return h
+
+    def file_info(self, h):
+        r = self.con.execute("SELECT hash,name,ext,pages,length(data) AS size,added FROM files WHERE hash=?",
+                             (h,)).fetchone()
+        return dict(r) if r else None
+
+    def file_data(self, h):
+        r = self.con.execute("SELECT data FROM files WHERE hash=?", (h,)).fetchone()
+        return bytes(r[0]) if r else None
+
+    def file_list(self):
+        """보관함 전체 + 쓰는 이력 수 (최근 쓴 것 먼저)."""
+        used, last = {}, {}
+        for (fj, d) in self.con.execute("SELECT files, date FROM records WHERE files IS NOT NULL AND files<>''"):
+            try:
+                for it in json.loads(fj):
+                    used[it["hash"]] = used.get(it["hash"], 0) + 1
+                    last[it["hash"]] = max(last.get(it["hash"], ""), d or "")
+            except (ValueError, KeyError, TypeError):
+                pass
+        out = [dict(r) for r in self.con.execute(
+            "SELECT hash,name,ext,pages,length(data) AS size,added FROM files")]
+        for f in out:
+            f["used"] = used.get(f["hash"], 0)
+            f["last"] = last.get(f["hash"], "")
+        out.sort(key=lambda f: (f["last"] or f["added"] or ""), reverse=True)
+        return out
+
+    def rename_file(self, h, name):
+        self.con.execute("UPDATE files SET name=? WHERE hash=?", (name, h))
+        self.con.commit()
+
+    def delete_file(self, h):
+        """보관함에서 지우고, 그 파일을 쓰던 이력에서도 뺀다."""
+        rows = self.con.execute("SELECT id, files FROM records WHERE files LIKE ?", ("%" + h + "%",)).fetchall()
+        for (rid, fj) in rows:
+            try:
+                items = [it for it in json.loads(fj) if it.get("hash") != h]
+            except ValueError:
+                continue
+            self.con.execute("UPDATE records SET files=? WHERE id=?", (json.dumps(items) if items else None, rid))
+        self.con.execute("DELETE FROM files WHERE hash=?", (h,))
+        self.con.commit()
+
+    def files_of(self, rec: dict):
+        """이력의 첨부파일 [{"hash","name","ext","pages","print"}] (보관함에서 지워진 것은 뺌)."""
+        try:
+            items = json.loads(rec.get("files") or "[]")
+        except ValueError:
+            return []
+        out = []
+        for it in items:
+            f = self.file_info(it.get("hash"))
+            if f:
+                f["print"] = bool(it.get("print", True))
+                out.append(f)
         return out
 
     def add_many(self, recs, source):
