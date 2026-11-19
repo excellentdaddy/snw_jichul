@@ -23,7 +23,7 @@ jobs:
       - name: 라이브러리 설치
         run: |
           python -m pip install --upgrade pip
-          pip install PySide6 openpyxl pyinstaller
+          pip install PySide6 openpyxl pyinstaller certifi
 
       - name: Inno Setup 설치
         run: choco install innosetup -y --no-progress

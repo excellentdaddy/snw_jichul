@@ -717,7 +717,7 @@ class MainWindow(QMainWindow):
             self.update_panel.show_result(m, err)
         if err:
             if not silent:
-                warn(self, "업데이트 확인 실패", "업데이트 서버에 연결하지 못했습니다.\n인터넷 연결을 확인한 뒤 다시 시도하세요.")
+                warn(self, "업데이트 확인 실패", f"업데이트 서버에 연결하지 못했습니다.\n\n이유: {err}\n\n잠시 뒤 다시 시도하세요.")
             return
         if not updater.is_newer(m):
             if not silent:
@@ -758,7 +758,8 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa
             dlg.close()
             if not cancelled["v"]:
-                warn(self, "업데이트 실패", "새 버전을 내려받지 못했습니다.\n잠시 뒤 다시 시도하세요.")
+                why = str(e) if isinstance(e, RuntimeError) else updater.explain(e)
+                warn(self, "업데이트 실패", f"새 버전을 내려받지 못했습니다.\n\n이유: {why}\n\n잠시 뒤 다시 시도하세요.")
             return
         dlg.close()
         try:

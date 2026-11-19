@@ -190,7 +190,9 @@ class UpdatePanel(QWidget):
         self.latest = None
         if err:
             self.lbl_latest.setText("—")
-            self.lbl_res.setText("확인하지 못했습니다 (인터넷 연결을 확인하세요)")
+            self.lbl_res.setText("확인하지 못했습니다 — " + err.splitlines()[0])
+            self.lbl_res.setToolTip(err)
+            self.lbl_res.setWordWrap(True)
             self.b_get.setEnabled(False)
             return
         self.lbl_latest.setText(f"{m['version']}" + (f"  ({m['date']})" if m.get("date") else ""))

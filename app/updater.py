@@ -27,7 +27,87 @@ from PySide6.QtCore import QThread, Signal
 from version import APP_VERSION, parse
 
 MANIFEST = "version.json"
-TIMEOUT = 6  # 초
+TIMEOUT = 15  # 초 (느린 회사망 대비)
+UA = {"User-Agent": "JichulUpdater"}
+
+
+# ---------------------------------------------------------------- 네트워크
+# PC마다 막히는 이유가 달라서 두 길로 시도한다.
+#  1) 파이썬 urllib: Windows 인증서 + 내장 인증서 묶음(certifi) 을 함께 써서
+#     'Windows 에 루트 인증서가 아직 안 깔린 PC' 에서도 HTTPS 가 되게 한다.
+#  2) 그래도 안 되면 PowerShell(Windows 자체 인터넷 기능): 회사 프록시·보안 프로그램 설정을 그대로 따른다.
+def _ssl_context():
+    import ssl
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+    except Exception:  # noqa
+        pass
+    return ctx
+
+
+def _ps_quote(x: str) -> str:
+    return "'" + x.replace("'", "''") + "'"
+
+
+def _powershell_get(url: str, dst: str, headers=None, timeout=TIMEOUT):
+    """Windows PowerShell 로 내려받는다 (프록시·인증서를 브라우저처럼 처리)."""
+    h = "; ".join(f"{_ps_quote(k)}={_ps_quote(v)}" for k, v in (headers or {}).items())
+    script = (
+        "$ProgressPreference='SilentlyContinue'; "
+        "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+        "[Net.WebRequest]::DefaultWebProxy.Credentials=[Net.CredentialCache]::DefaultNetworkCredentials; "
+        f"Invoke-WebRequest -UseBasicParsing -Uri {_ps_quote(url)} -OutFile {_ps_quote(dst)} "
+        f"-Headers @{{{h}}} -TimeoutSec {int(timeout)}"
+    )
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                        "-Command", script], capture_output=True, text=True, timeout=timeout + 30,
+                       creationflags=0x08000000)  # CREATE_NO_WINDOW
+    if r.returncode != 0 or not os.path.exists(dst):
+        msg = (r.stderr or r.stdout or "").strip().splitlines()
+        raise RuntimeError(msg[0] if msg else "PowerShell 다운로드 실패")
+
+
+def http_get(url: str, headers=None, timeout=TIMEOUT) -> bytes:
+    """작은 응답(JSON·글)을 받는다. 404 같은 HTTP 오류는 그대로 올린다."""
+    hd = dict(UA, **(headers or {}))
+    try:
+        req = urllib.request.Request(url, headers=hd)
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
+            return r.read()
+    except urllib.error.HTTPError:
+        raise
+    except Exception as first:  # noqa  인증서·프록시·시간 초과 → Windows 방식으로 다시
+        fd, tmp = tempfile.mkstemp(prefix="jichul_get_"); os.close(fd); os.remove(tmp)
+        try:
+            _powershell_get(url, tmp, hd, timeout)
+            with open(tmp, "rb") as f:
+                return f.read()
+        except Exception as second:  # noqa
+            raise RuntimeError(explain(first) + f"\n(다른 방법도 실패: {second})")
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+
+def explain(e) -> str:
+    """사용자에게 보여 줄 실패 이유 (짧게)."""
+    if isinstance(e, RuntimeError):  # 이미 사용자용 문구
+        return str(e)
+    t = f"{type(e).__name__}: {e}"
+    low = t.lower()
+    if isinstance(e, urllib.error.HTTPError) and e.code in (403, 429):
+        return "업데이트 서버가 잠시 요청을 막았습니다 (같은 회사 인터넷에서 확인이 몰림). 잠시 뒤 다시 시도하세요."
+    if "certificate" in low or "ssl" in low:
+        return "보안 인증서 확인에 실패했습니다 (회사 보안 프로그램·인증서 문제)."
+    if "timed out" in low or "timeout" in low:
+        return "응답이 너무 늦습니다 (인터넷이 느리거나 막혀 있음)."
+    if "getaddrinfo" in low or "name or service" in low or "11001" in low:
+        return "서버 주소를 찾지 못했습니다 (인터넷 연결 끊김)."
+    if "proxy" in low or "407" in low:
+        return "회사 프록시(인터넷 관문) 설정 때문에 연결하지 못했습니다."
+    return t[:200]
 
 
 def is_url(src: str) -> bool:
@@ -50,18 +130,21 @@ def github_repo(src: str):
     return None
 
 
+API = {"Accept": "application/vnd.github+json"}
+
+
 def read_github(repo: str) -> dict:
-    """GitHub 최신 Release → manifest. 태그 v1.3.0, 첨부파일 중 .exe 를 설치파일로 사용."""
+    """GitHub 최신 Release → manifest. 태그 v1.3.0, 첨부파일 중 .exe 를 설치파일로 사용.
+    API 가 막히면(같은 인터넷에서 시간당 60회 한도 등) 저장소의 원본 파일로 대신 확인한다."""
     url = f"https://api.github.com/repos/{repo}/releases/latest"
-    req = urllib.request.Request(url, headers={"User-Agent": "JichulUpdater",
-                                               "Accept": "application/vnd.github+json"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            rel = json.loads(r.read().decode("utf-8"))
+        rel = json.loads(http_get(url, API).decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             raise RuntimeError("공개된 새 버전 정보가 없습니다.")
-        raise
+        return read_github_raw(repo, e)
+    except Exception as e:  # noqa
+        return read_github_raw(repo, e)
     exe = [a for a in rel.get("assets", []) if a.get("name", "").lower().endswith(".exe")]
     if not exe:
         raise RuntimeError("최신 Release 에 설치파일(.exe)이 첨부되어 있지 않습니다.")
@@ -69,6 +152,47 @@ def read_github(repo: str) -> dict:
             "url": exe[0]["browser_download_url"], "size": exe[0].get("size", 0),
             "notes": clean_notes(rel.get("body") or ""), "date": (rel.get("published_at") or "")[:10],
             "_base": "github"}
+
+
+RAW = "https://raw.githubusercontent.com/{repo}/main/{path}"
+
+
+def _raw(repo, path) -> str:
+    return http_get(RAW.format(repo=repo, path=path)).decode("utf-8-sig")
+
+
+def changelog_entries(text: str) -> list:
+    """CHANGELOG.md 의 '## 버전' 묶음 → [{version, date, notes}]."""
+    out, cur = [], None
+    for line in text.replace("\r", "").split("\n"):
+        if line.startswith("## "):
+            cur = {"version": line[3:].strip().lstrip("vV"), "date": "", "lines": []}
+            out.append(cur)
+        elif cur is not None:
+            cur["lines"].append(line)
+    return [{"version": c["version"], "date": c["date"], "notes": clean_notes("\n".join(c["lines"]))} for c in out]
+
+
+def read_github_raw(repo: str, why=None) -> dict:
+    """API 없이 확인: app/version.py 의 버전 + 정해진 이름의 설치파일 주소."""
+    try:
+        import re
+        src = _raw(repo, "app/version.py")
+        ver = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', src).group(1)
+    except Exception as e:  # noqa
+        raise RuntimeError(explain(why or e))
+    name = f"SnW_Jichul_Setup_{ver}.exe"
+    notes = ""
+    try:
+        for c in changelog_entries(_raw(repo, "CHANGELOG.md")):
+            if c["version"] == ver:
+                notes = c["notes"]
+                break
+    except Exception:  # noqa
+        pass
+    return {"version": ver, "installer": name,
+            "url": f"https://github.com/{repo}/releases/download/v{ver}/{name}",
+            "size": 0, "notes": notes, "date": "", "_base": "github"}
 
 
 def clean_notes(text: str) -> str:
@@ -95,10 +219,10 @@ def read_history(src: str, limit=30) -> list:
         m = read_manifest(src)
         return m.get("history") or [{"version": m["version"], "date": m.get("date", ""), "notes": m.get("notes", "")}]
     url = f"https://api.github.com/repos/{repo}/releases?per_page={limit}"
-    req = urllib.request.Request(url, headers={"User-Agent": "JichulUpdater",
-                                               "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-        rels = json.loads(r.read().decode("utf-8"))
+    try:
+        rels = json.loads(http_get(url, API).decode("utf-8"))
+    except Exception:  # noqa  API 가 막히면 CHANGELOG.md 로
+        return changelog_entries(_raw(repo, "CHANGELOG.md"))[:limit]
     out = []
     for rel in rels:
         if rel.get("draft"):
@@ -121,7 +245,7 @@ class HistoryThread(QThread):
         try:
             self.done.emit(read_history(self.src), "")
         except Exception as e:  # noqa
-            self.done.emit(None, str(e))
+            self.done.emit(None, str(e) if isinstance(e, RuntimeError) else explain(e))
 
 
 def read_manifest(src: str) -> dict:
@@ -133,9 +257,7 @@ def read_manifest(src: str) -> dict:
         return read_github(repo)
     if is_url(src):
         url = src if src.lower().endswith(".json") else urllib.parse.urljoin(src.rstrip("/") + "/", MANIFEST)
-        req = urllib.request.Request(url, headers={"User-Agent": "JichulUpdater"})
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            m = json.loads(r.read().decode("utf-8-sig"))
+        m = json.loads(http_get(url).decode("utf-8-sig"))
         m["_base"] = url.rsplit("/", 1)[0] + "/"
     else:
         path = src if src.lower().endswith(".json") else os.path.join(src, MANIFEST)
@@ -158,18 +280,27 @@ def fetch_installer(m: dict, progress=None) -> str:
     base = m["_base"]
     if base == "github" or is_url(base):
         url = m["url"] if base == "github" else urllib.parse.urljoin(base, urllib.parse.quote(m["installer"]))
-        req = urllib.request.Request(url, headers={"User-Agent": "JichulUpdater"})
-        with urllib.request.urlopen(req, timeout=TIMEOUT * 5) as r, open(dst, "wb") as f:
-            total = int(r.headers.get("Content-Length") or 0)
-            got = 0
-            while True:
-                chunk = r.read(256 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                got += len(chunk)
-                if progress:
-                    progress(got, total)
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=TIMEOUT * 4, context=_ssl_context()) as r, open(dst, "wb") as f:
+                total = int(r.headers.get("Content-Length") or 0)
+                got = 0
+                while True:
+                    chunk = r.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    if progress:
+                        progress(got, total)
+        except urllib.error.HTTPError:
+            raise
+        except Exception:  # noqa  인증서·프록시 문제면 Windows 방식으로 (진행률 없이)
+            if progress:
+                progress(1, 100)
+            _powershell_get(url, dst, UA, timeout=600)
+            if progress:
+                progress(100, 100)
     else:
         src = os.path.join(base, m["installer"])
         total = os.path.getsize(src)
@@ -221,4 +352,4 @@ class CheckThread(QThread):
         try:
             self.done.emit(read_manifest(self.src), "")
         except Exception as e:  # noqa
-            self.done.emit(None, str(e))
+            self.done.emit(None, str(e) if isinstance(e, RuntimeError) else explain(e))
