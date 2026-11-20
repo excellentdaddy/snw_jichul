@@ -790,8 +790,10 @@ class MainWindow(QMainWindow):
 
     def do_update(self, m):
         import updater
-        from PySide6.QtWidgets import QApplication, QProgressDialog
+        from PySide6.QtWidgets import QApplication, QProgressBar, QProgressDialog
         dlg = QProgressDialog("새 버전을 내려받는 중…", "취소", 0, 100, self)
+        bar = QProgressBar(); bar.setAlignment(Qt.AlignmentFlag.AlignCenter); bar.setMinimumHeight(20)
+        dlg.setBar(bar); dlg.setMinimumWidth(360)  # 숫자% 를 막대 가운데에
         dlg.setWindowTitle("업데이트"); dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(0); dlg.setValue(0)
         cancelled = {"v": False}
