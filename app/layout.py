@@ -91,8 +91,8 @@ def _build(key, title, cols, jeon_cols, col_px, dx=0.0, dy=0.0, bg="", enabled=T
         "day": B(1848, 1060, 1927, 1095),
         # 수령인 ______ (인)
         "name": B(1697, 1148, 1903, 1183),
-        # 비고(계좌 등): 날짜 줄과 수령인 줄 사이
-        "note": B(1215, 1096, 2042, 1147),
+        # 비고: 科目 줄 오른쪽 칸 (세로선 1694 ~ 오른쪽 끝)
+        "note": B(1712, 265, 2042, 336),
     }
     col_x = [mx(x + dx) for x in col_px]
     hy = lambda y: my(y + dy)

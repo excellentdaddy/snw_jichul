@@ -131,12 +131,12 @@ class Store:
         fj = self._files_json(files)
         direct = source == "직접작성"
         if direct:
-            self._unhide(r["name"])
+            self._unhide(r["name"]); self._unhide(r["account"], "hidden_accounts")
         if self.exists(r):
             if direct:
                 self.con.execute(
-                    "UPDATE records SET attach=?, files=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
-                    (attach, fj, r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
+                    "UPDATE records SET attach=?, files=?, note=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
+                    (attach, fj, r["note"], r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
                 self._clean_images()
                 if commit:
                     self.con.commit()
@@ -162,7 +162,7 @@ class Store:
     def update(self, rid: int, rec: dict, images=None, files=None) -> bool:
         """그 이력을 지금 내용(이미지 포함, 없으면 이미지 지움)으로 덮어쓴다. 이력이 없으면 False."""
         r = self._norm(rec)
-        self._unhide(r["name"])
+        self._unhide(r["name"]); self._unhide(r["account"], "hidden_accounts")
         cur = self.con.execute(
             "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?, files=?"
             " WHERE id=?",
@@ -297,21 +297,31 @@ class Store:
         return [r[0] for r in self.con.execute(
             "SELECT payee FROM records WHERE payee<>'' GROUP BY payee ORDER BY MAX(date) DESC")]
 
+    def accounts(self):
+        """작성이력에 쓴 계정과목 (많이 쓴 순)."""
+        return [r[0] for r in self.con.execute(
+            "SELECT account FROM records WHERE account<>'' GROUP BY account ORDER BY COUNT(*) DESC, MAX(date) DESC")
+            if r[0] not in set(self.get("hidden_accounts", []) or [])]
+
+    def hide_account(self, account):
+        """계정과목 목록에서만 뺀다 (이력은 그대로). 그 계정과목으로 다시 저장하면 목록에 다시 나온다."""
+        self.hide_name(account, "hidden_accounts")
+
     def names(self):
         hidden = set(self.get("hidden_names", []) or [])
         return [r[0] for r in self.con.execute(
             "SELECT name FROM records WHERE name<>'' GROUP BY name ORDER BY COUNT(*) DESC") if r[0] not in hidden]
 
-    def hide_name(self, name):
+    def hide_name(self, name, key="hidden_names"):
         """수령인 목록에서만 뺀다 (이력은 그대로). 그 이름으로 다시 저장하면 목록에 다시 나온다."""
-        h = list(self.get("hidden_names", []) or [])
+        h = list(self.get(key, []) or [])
         if name and name not in h:
-            self.set("hidden_names", h + [name])
+            self.set(key, h + [name])
 
-    def _unhide(self, name):
-        h = list(self.get("hidden_names", []) or [])
+    def _unhide(self, name, key="hidden_names"):
+        h = list(self.get(key, []) or [])
         if name in h:
-            h.remove(name); self.set("hidden_names", h)
+            h.remove(name); self.set(key, h)
 
     def latest_for_payee(self, payee: str):
         r = self.con.execute(

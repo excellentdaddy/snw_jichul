@@ -18,6 +18,7 @@ BLUE = QColor(0, 0, 255)
 # 조정 가능한 항목: 키 -> (화면 이름, 기본 글자크기 pt)
 ITEMS = {
     "account": ("계정과목", 9.5),
+    "note": ("비고", 9.5),
     "payee": ("지출처", 9.5),
     "amount_kor": ("금액(한글)", 9.5),
     "amount_num": ("금액(숫자)", 9.5),
@@ -191,6 +192,7 @@ def render(p, doc: dict, lay: FormLayout, guides=False, adjust=None, highlight=N
         _text(p, b, text, f, align)
 
     simple("account", doc.get("account"), L | VC)
+    simple("note", doc.get("note"), L | VC)
     simple("payee", doc.get("payee"), L | VC)
 
     amt = int(doc.get("amount") or 0)
@@ -219,9 +221,6 @@ def render(p, doc: dict, lay: FormLayout, guides=False, adjust=None, highlight=N
         simple("day", str(d.day), C, fit=False)
 
     simple("name", doc.get("name"), C)
-    if doc.get("note"):  # 예전 데이터 호환용 (현재 화면에는 비고란 없음)
-        b = F["note"]
-        _text(p, b, doc["note"], fit_font(doc["note"], 9.0, b.w * U), L | VC)
 
     # ---------- 결재란 ----------
     for i, st in enumerate(doc.get("approvals") or []):

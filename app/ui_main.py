@@ -5,8 +5,8 @@ import os
 import re
 from datetime import date
 
-from PySide6.QtCore import QBuffer, QByteArray, QDate, QEvent, QIODevice, QMarginsF, QObject, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QPen, QShortcut
+from PySide6.QtCore import QBuffer, QByteArray, QDate, QEvent, QIODevice, QMarginsF, QObject, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPageLayout, QPageSize, QPainter, QPen, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QSplitter, QCheckBox, QComboBox, QCompleter, QDateEdit, QFileDialog, QGridLayout,
@@ -23,9 +23,6 @@ from ui_common import ask, card, info, warn
 from ui_zero import describe
 
 from version import APP_NAME, APP_VERSION, UPDATE_SOURCE
-ACCOUNTS = ["가지급금", "검사수수료", "교육훈련비", "도서인쇄비", "미착품", "보험료", "복리후생비",
-            "부재료", "상품", "세금과공과", "소모품비", "수선비", "수출제비용", "여비교통비",
-            "외주가공비", "운반비", "원재료", "접대비", "지급수수료", "차량유지비", "통신비", "포장비"]
 
 AMT_VAT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원(\s?\(VAT 포함\)|\s?\(VAT포함\))?")
 VAT_RE = re.compile(r"\(?(VAT\s*포함)\)?", re.I)
@@ -74,6 +71,60 @@ def local_shortcut(key, widget, fn):
     sc = QShortcut(QKeySequence(key), widget, activated=fn)
     sc.setContext(Qt.ShortcutContext.WidgetShortcut)
     return sc
+
+
+class FitLabel(QLabel):
+    """칸이 모자라면 글자를 작게 줄여서 끝까지 다 보이게 하는 한 줄 라벨."""
+
+    def minimumSizeHint(self):
+        return QSize(10, super().minimumSizeHint().height())
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        f = QFont(self.font())
+        size = f.pointSizeF() if f.pointSizeF() > 0 else 10.0
+        while size > 6:
+            f.setPointSizeF(size)
+            if QFontMetrics(f).horizontalAdvance(self.text()) <= self.width():
+                break
+            size -= 0.5
+        p.setFont(f)
+        p.setPen(self.palette().color(self.foregroundRole()))
+        p.drawText(self.rect(), int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self.text())
+
+
+class CalcEdit(QPlainTextEdit):
+    """두 줄 높이 계산식 칸. Enter = 금액에 넣기, Shift+Enter = 줄바꿈.
+    줄을 바꿔 쓰면 줄끼리 더한다 (줄 끝·줄 앞에 + - * / 가 있으면 그대로 이어서 계산)."""
+    returnPressed = Signal()
+    textEdited = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.textChanged.connect(lambda: self.textEdited.emit(self.text()))
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        m = self.contentsMargins(); d = self.document().documentMargin()
+        self.setFixedHeight(int(self.fontMetrics().lineSpacing() * 2 + d * 2 + m.top() + m.bottom() + 6))
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (ev.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self.returnPressed.emit()
+            return
+        super().keyPressEvent(ev)
+
+    def text(self) -> str:
+        out = ""
+        for line in (x.strip() for x in self.toPlainText().splitlines()):
+            if not line:
+                continue
+            if out and not (out[-1] in "+-*/×÷xX(" or line[0] in "+-*/×÷xX)"):
+                out += "+"
+            out += line
+        return out
 
 
 def field_label(text):
@@ -327,6 +378,8 @@ class _XDelegate(QStyledItemDelegate):
 
     def paint(self, p, opt, idx):
         super().paint(p, opt, idx)
+        if not idx.data():  # 빈 줄(선택 안 함)에는 ✕ 없음
+            return
         r = QRect(opt.rect.right() - self.W, opt.rect.top(), self.W, opt.rect.height())
         hover = bool(opt.state & QStyle.StateFlag.State_MouseOver)
         p.save()
@@ -349,7 +402,7 @@ class _XFilter(QObject):
             view = self.combo.view()
             pos = ev.position().toPoint()
             idx = view.indexAt(pos)
-            if idx.isValid() and pos.x() >= view.visualRect(idx).right() - _XDelegate.W:
+            if idx.isValid() and idx.data() and pos.x() >= view.visualRect(idx).right() - _XDelegate.W:
                 if ev.type() == QEvent.Type.MouseButtonRelease:
                     text = idx.data()
                     cur = self.combo.currentText()
@@ -646,10 +699,7 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, f=fn: f())
             return b
 
-        self.actions.addWidget(group(
-            btn("새로 작성", self.new_doc, "입력칸 비우기 (Ctrl+N)"),
-            btn("저장", self.do_save, "인쇄하지 않고 작성이력에만 저장 (Ctrl+S)"),
-            btn("인쇄", self.do_print, "인쇄하고 작성이력에 저장 (Ctrl+P)", "HeadPrimary")))
+        self.actions.addWidget(group())  # 작성 화면: [새로 작성·저장·인쇄]는 미리보기 위에 있음
         more = QPushButton("도움말"); more.setObjectName("HeadBtn")
         m = QMenu(more)
         for text, fn in (("업데이트 확인", self.check_update_now), ("시험 인쇄", self.test_print),
@@ -816,6 +866,16 @@ class MainWindow(QMainWindow):
         self.attach_panel = AttachPanel(self)
         self.attach_panel.changed.connect(self.changed)
         mid = QWidget(); mv = QVBoxLayout(mid); mv.setContentsMargins(0, 0, 0, 0); mv.setSpacing(12)
+        # 미리보기 위: 새로 작성 · 저장 · 인쇄
+        ab = QHBoxLayout(); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(8); ab.addStretch()
+        for text, fn, tip, name in (("새로 작성", self.new_doc, "입력칸 비우기 (Ctrl+N)", "HeadBtn"),
+                                    ("저장", self.do_save, "인쇄하지 않고 작성이력에만 저장 (Ctrl+S)", "HeadBtn"),
+                                    ("인쇄", self.do_print, "인쇄하고 작성이력에 저장 (Ctrl+P)", "HeadPrimary")):
+            b = QPushButton(text); b.setObjectName(name); b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            ab.addWidget(b)
+        mv.addLayout(ab)
         mv.addWidget(pv_card, 1)
         att_card = card(self.attach_panel, "첨부파일 (A4로 같이 인쇄)", margins=(12, 8, 12, 8),
                         extra=[self.attach_panel.count_label])
@@ -857,7 +917,7 @@ class MainWindow(QMainWindow):
         self.qtbl.setShowGrid(False); self.qtbl.setWordWrap(False)
         self.qtbl.verticalHeader().setDefaultSectionSize(30)
         hh = self.qtbl.horizontalHeader()
-        hh.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        hh.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)  # 열 머리는 가운데
         hh.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         for c, wd in enumerate([96, 130, 92]):
             self.qtbl.setColumnWidth(c, wd)
@@ -930,21 +990,26 @@ class MainWindow(QMainWindow):
         g = QGridLayout(w); g.setContentsMargins(0, 0, 0, 0); g.setHorizontalSpacing(10); g.setVerticalSpacing(8)
         g.setColumnStretch(1, 1); g.setColumnStretch(3, 1)
 
+        # 종이에 써지는 순서대로: 科目 [계정과목 | 비고] → 支給處 → 一金 → 적요(내역) → 작성일 · 수령인
+        # (작성일 · 수령인 칸은 _build_detail 에서 내역 아래 [기본 틀] 옆에 놓는다)
         self.de_date = QDateEdit(); self.de_date.setCalendarPopup(True); self.de_date.setDisplayFormat("yyyy-MM-dd")
         self.de_date.dateChanged.connect(self._date_changed)
         self.ed_name = QComboBox(); self.ed_name.setEditable(True)
         self.ed_name.currentTextChanged.connect(self.changed)
         deletable_combo(self.ed_name, self._name_deleted)
-        g.addWidget(field_label("작성일"), 0, 0); g.addWidget(self.de_date, 0, 1)
-        g.addWidget(field_label("수령인"), 0, 2); g.addWidget(self.ed_name, 0, 3)
-
         self.chk_nodate = QCheckBox("년월일 인쇄 안 함")
         self.chk_nodate.toggled.connect(self._nodate_toggled)
+
+        # 계정과목: 기본 목록 없이, 저장·인쇄한 계정과목이 쌓여서 목록에 나온다 (load_history 에서 채움)
         self.cb_account = QComboBox(); self.cb_account.setEditable(True)
-        self.cb_account.addItems([""] + ACCOUNTS)
+        self.cb_account.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        deletable_combo(self.cb_account, self._account_deleted)  # 이름마다 ✕: 오타 등을 목록에서 빼기
         self.cb_account.currentTextChanged.connect(self.changed)
-        g.addWidget(self.chk_nodate, 1, 1)
-        g.addWidget(field_label("계정과목"), 1, 2); g.addWidget(self.cb_account, 1, 3)
+        self.ed_note = QLineEdit()
+        self.ed_note.textChanged.connect(self.changed)
+        g.addWidget(field_label("계정과목"), 1, 0); g.addWidget(self.cb_account, 1, 1)
+        lb_note = field_label("비고"); lb_note.setContentsMargins(14, 0, 0, 0)  # 계정과목 상자와 띄우기
+        g.addWidget(lb_note, 1, 2); g.addWidget(self.ed_note, 1, 3)
 
         self.ed_payee = QLineEdit(); self.ed_payee.setPlaceholderText("입력하면 이전 지출처가 자동완성됩니다")
         self.ed_payee.textChanged.connect(self.changed)
@@ -959,18 +1024,24 @@ class MainWindow(QMainWindow):
         self.ed_amount.setPlaceholderText("0")
         self.ed_amount.textEdited.connect(self._amount_edited)
         self.chk_vat = QCheckBox("VAT 포함"); self.chk_vat.clicked.connect(self._vat_clicked)
-        hb.addWidget(self.ed_amount, 1); hb.addWidget(QLabel("원")); hb.addSpacing(6); hb.addWidget(self.chk_vat)
+        self.ed_amount.setFixedWidth(140)  # 금액 칸은 짧게, 한글 금액은 오른쪽에
+        self.lbl_kor = FitLabel(""); self.lbl_kor.setObjectName("Kor")  # 길면 글자를 줄여 다 보이게
+        hb.addWidget(self.ed_amount); hb.addWidget(QLabel("원")); hb.addSpacing(6); hb.addWidget(self.chk_vat)
+        hb.addSpacing(10); hb.addWidget(self.lbl_kor, 1)
         g.addWidget(field_label("금액"), 3, 0); g.addLayout(hb, 3, 1, 1, 3)
-        self.lbl_kor = QLabel(""); self.lbl_kor.setObjectName("Kor")
-        g.addWidget(self.lbl_kor, 4, 1, 1, 3)
 
         hc = QHBoxLayout(); hc.setSpacing(8)
-        self.ed_calc = QLineEdit(); self.ed_calc.setPlaceholderText("예) 380,000*4  또는  12000+8500")
-        self.ed_calc.textChanged.connect(self._calc)
+        self.ed_calc = CalcEdit(); self.ed_calc.setPlaceholderText("예) 380,000*4  또는  12000+8500  (줄을 바꿔 쓰면 더함)")
+        self.ed_calc.textEdited.connect(self._calc)
         self.ed_calc.returnPressed.connect(self._calc_apply)
         self.lbl_calc = QLabel(""); self.lbl_calc.setObjectName("Hint")
         b = QPushButton("금액에 넣기"); b.setObjectName("Small"); b.clicked.connect(self._calc_apply)
-        hc.addWidget(self.ed_calc, 1); hc.addWidget(self.lbl_calc); hc.addWidget(b)
+        # 오른쪽 고정폭 칸: 위에 계산 결과, 아래 [금액에 넣기] → 결과가 길어져도 입력칸 크기는 그대로
+        rc = QVBoxLayout(); rc.setContentsMargins(0, 0, 0, 0); rc.setSpacing(4)
+        self.lbl_calc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rc.addWidget(self.lbl_calc); rc.addWidget(b)
+        rw = QWidget(); rw.setLayout(rc); rw.setFixedWidth(110)
+        hc.addWidget(self.ed_calc, 1); hc.addWidget(rw)
         g.addWidget(field_label("계산기"), 5, 0); g.addLayout(hc, 5, 1, 1, 3)
 
         return w
@@ -992,6 +1063,12 @@ class MainWindow(QMainWindow):
         h.addWidget(b); h.addWidget(self.lbl_cnt, 1)
         h.addWidget(field_label("글자크기")); h.addWidget(self.sp_size)
         v.addLayout(h)
+        # 종이에서 적요 아래 '20 년 월 일 / 수령인' 자리 순서대로
+        h2 = QHBoxLayout(); h2.setSpacing(8)
+        h2.addWidget(field_label("작성일")); h2.addWidget(self.de_date); h2.addWidget(self.chk_nodate)
+        h2.addSpacing(12)
+        h2.addWidget(field_label("수령인")); h2.addWidget(self.ed_name, 1)
+        v.addLayout(h2)
         return w
 
     # ================================================================ 3. 설정 화면
@@ -1101,7 +1178,7 @@ class MainWindow(QMainWindow):
             "amount": self.amount(),
             "name": self.ed_name.currentText().strip(),
             "detail": self.ed_detail.toPlainText().rstrip(),
-            "note": "",  # 비고란 없음 — 계좌 등은 내역에 함께 적는다
+            "note": self.ed_note.text().strip(),  # 비고: 科目 줄 오른쪽 칸
             "detail_size": self.sp_size.value(),
             "approvals": self.approval.states(),
             "images": self.images,
@@ -1156,6 +1233,7 @@ class MainWindow(QMainWindow):
     def _set_amount_text(self, n):
         self.ed_amount.setText(f"{n:,}" if n else "")
         self.lbl_kor.setText(f"금 {numberstring(n)}원정" if n else "")
+        self.lbl_kor.setToolTip(self.lbl_kor.text())  # 아주 큰 금액은 칸이 모자라 잘릴 수 있어 전체를 툴팁으로
 
     def _apply_amount_to_detail(self):
         """위의 금액·VAT 를 내역에 반영.
@@ -1275,11 +1353,15 @@ class MainWindow(QMainWindow):
         self.store.hide_name(name)
         self.toast(f"수령인 목록에서 '{name}'을(를) 뺐습니다. (작성이력은 그대로, 이 이름으로 다시 저장하면 목록에 다시 나옵니다)", 6000)
 
+    def _account_deleted(self, account):
+        self.store.hide_account(account)
+        self.toast(f"계정과목 목록에서 '{account}'을(를) 뺐습니다. (작성이력은 그대로, 이 계정과목으로 다시 저장하면 목록에 다시 나옵니다)", 6000)
+
     def _payee_picked(self, text):
         rec = self.store.latest_for_payee(text)
         if not rec:
             return
-        if not self.cb_account.currentText() and rec.get("account"):
+        if not self.cb_account.currentText() and rec.get("account") in self.store.accounts():
             self.cb_account.setCurrentText(rec["account"])
 
     # ---------- 새 문서 / 불러오기 ----------
@@ -1290,6 +1372,7 @@ class MainWindow(QMainWindow):
         self.de_date.blockSignals(True); self.de_date.setDate(qd(today)); self.de_date.blockSignals(False)
         self.chk_nodate.setChecked(False)
         self.cb_account.setCurrentText("")
+        self.ed_note.clear()
         self.ed_payee.clear()
         self._set_amount_text(0)
         self.chk_vat.setChecked(False)
@@ -1316,8 +1399,12 @@ class MainWindow(QMainWindow):
         self.ed_name.setCurrentText(rec.get("name") or self.store.get("default_name", ""))
         detail = (rec.get("detail") or "").rstrip()
         note = (rec.get("note") or "").strip()
-        if note and note not in detail:
-            detail = (detail + "\n" if detail else "") + note  # 예전 비고(계좌 등)는 내역 맨 아래 줄로
+        if (rec.get("source") or "직접작성") != "직접작성":
+            # 엑셀에서 가져온 예전 비고(계좌 등)는 지금처럼 내역 맨 아래 줄로
+            if note and note not in detail:
+                detail = (detail + "\n" if detail else "") + note
+            note = ""
+        self.ed_note.setText(note)
         self.ed_detail.setPlainText(detail)
         self._set_images(self.store.images_of(rec))  # 저장해 둔 이미지(엑셀 표 등)도 같은 자리에
         self.attach_panel.set_items(self.store.files_of(rec))  # 첨부파일도 같이
@@ -1337,6 +1424,10 @@ class MainWindow(QMainWindow):
         self.ed_name.blockSignals(True)
         self.ed_name.clear(); self.ed_name.addItems(self.store.names()); self.ed_name.setCurrentText(cur)
         self.ed_name.blockSignals(False)
+        cur = self.cb_account.currentText()
+        self.cb_account.blockSignals(True)
+        self.cb_account.clear(); self.cb_account.addItems([""] + self.store.accounts()); self.cb_account.setCurrentText(cur)
+        self.cb_account.blockSignals(False)
         self.payee_completer.model().setStringList(self.store.payees())
         self.filter_quick()
         self.lbl_db.setText(f"작성이력 {len(self.records):,}건  ·  {self.store.path}")

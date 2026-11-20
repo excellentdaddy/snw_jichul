@@ -29,6 +29,15 @@ QWidget#CardHeader QComboBox { padding: 0px 6px; min-height: 16px; font-size: 9p
 QWidget#CardHeader QComboBox:focus { padding: 0px 5px; }
 QWidget#CardHeader QPushButton { padding: 0px 10px; min-height: 18px; font-size: 9pt; border-radius: 10px; }
 QWidget#CardHeader QLabel#Hint { color: #4a6fa5; }
+QWidget#CardHeader[tone="red"] { background: #fce8e6; border-bottom: 1px solid #fad2cf; }
+QWidget#CardHeader[tone="red"] QLabel#CardTitle { color: #a50e0e; }
+QWidget#CardHeader[tone="red"] QLabel#Hint { color: #b3625a; }
+QWidget#CardHeader[tone="yellow"] { background: #fef7e0; border-bottom: 1px solid #feefc3; }
+QWidget#CardHeader[tone="yellow"] QLabel#CardTitle { color: #8d5a00; }
+QWidget#CardHeader[tone="yellow"] QLabel#Hint { color: #9a7322; }
+QWidget#CardHeader[tone="green"] { background: #e6f4ea; border-bottom: 1px solid #ceead6; }
+QWidget#CardHeader[tone="green"] QLabel#CardTitle { color: #0d652d; }
+QWidget#CardHeader[tone="green"] QLabel#Hint { color: #3d7a52; }
 QLabel { background: transparent; }
 QLabel#SectionTitle { font-size: 11.5pt; font-weight: 700; color: TEXT; }
 QLabel#FieldLabel { color: TEXT2; font-weight: 600; min-width: 52px; }
