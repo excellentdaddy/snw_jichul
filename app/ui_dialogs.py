@@ -42,7 +42,7 @@ class SettingsPanel(QWidget):
         f1.addRow("사용할 프린터", self.cb_printer)
         f1.addRow("", self.chk_dialog)
         v.addWidget(card(w1, "프린터", "기본으로 쓸 프린터입니다. 작성 화면의 미리보기 위에서도 바로 바꿀 수 있습니다. "
-                                      "용지는 A5로 자동 설정됩니다.", fixed=True))
+                                      "용지(A5 / B6)와 영점 · 배율은 작성 화면에서 프린터마다 따로 정합니다.", fixed=True))
 
         w2 = QWidget(); f2 = QFormLayout(w2); f2.setContentsMargins(0, 0, 0, 0); f2.setSpacing(10)
         self.ed_name = QLineEdit(); self.ed_name.setMaximumWidth(240)

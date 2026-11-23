@@ -706,7 +706,7 @@ class MainWindow(QMainWindow):
         self.actions.addWidget(group())  # 작성 화면: [새로 작성·저장·인쇄]는 미리보기 위에 있음
         more = QPushButton("도움말"); more.setObjectName("HeadBtn")
         m = QMenu(more)
-        for text, fn in (("업데이트 확인", self.check_update_now), ("시험 인쇄", self.test_print),
+        for text, fn in (("사용방법", self.open_guide), ("업데이트 확인", self.check_update_now), ("시험 인쇄", self.test_print),
                          ("데이터 폴더 열기", self.open_data_dir), ("프로그램 정보", self.about)):
             a = QAction(text, self); a.triggered.connect(lambda _=False, f=fn: f()); m.addAction(a)
         more.setMenu(m)
@@ -1095,11 +1095,15 @@ class MainWindow(QMainWindow):
         from ui_coord import CoordPanel
         from ui_dialogs import DataPanel, SettingsPanel, UpdatePanel
         from ui_files import FilesPanel
+        from ui_guide import GuidePanel
         page = QWidget()
         h = QHBoxLayout(page); h.setContentsMargins(16, 14, 16, 10); h.setSpacing(14)
         self.side = QListWidget(); self.side.setObjectName("SideNav"); self.side.setFixedWidth(190)
-        for text in ("좌표 설정", "프린터 · 기본값", "첨부파일 관리", "데이터", "업데이트"):
-            QListWidgetItem(text, self.side)
+        from PySide6.QtCore import QSize
+        from ui_common import TONES, _chevron
+        self.side.setIconSize(QSize(12, 12))
+        for text in ("좌표 설정", "프린터 · 기본값", "첨부파일 관리", "데이터", "업데이트", "사용방법"):
+            QListWidgetItem(QIcon(_chevron(TONES["blue"])), text, self.side)  # 제목 앞 꺽쇠
         h.addWidget(self.side)
         self.set_stack = QStackedWidget()
         self.coord = CoordPanel(self)
@@ -1107,7 +1111,9 @@ class MainWindow(QMainWindow):
         self.files_panel = FilesPanel(self)
         self.data_panel = DataPanel(self)
         self.update_panel = UpdatePanel(self)
-        for wdg in (self.coord, self.settings_panel, self.files_panel, self.data_panel, self.update_panel):
+        self.guide_panel = GuidePanel(self)
+        for wdg in (self.coord, self.settings_panel, self.files_panel, self.data_panel, self.update_panel,
+                    self.guide_panel):
             self.set_stack.addWidget(wdg)
         h.addWidget(self.set_stack, 1)
         self.side.currentRowChanged.connect(self._side_changed)
@@ -1120,6 +1126,11 @@ class MainWindow(QMainWindow):
         self.set_stack.setCurrentIndex(r)
         if self.set_stack.widget(r) is self.data_panel:
             self.data_panel.refresh()
+
+    def open_guide(self):
+        """도움말 > 사용방법 → 설정 > 사용방법."""
+        self.go(PAGE_SETTINGS)
+        self.side.setCurrentRow(self.set_stack.indexOf(self.guide_panel))
 
     def open_files_settings(self):
         """작성 화면 [추가 ▾] > 첨부파일 관리… → 설정 > 첨부파일."""
