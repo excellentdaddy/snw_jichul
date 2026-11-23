@@ -118,6 +118,8 @@ QPushButton#Pad:pressed { background: PRIMARY; color: white; }
 QLabel#PadValue { background: PRIMARY_LIGHT; border-radius: 10px; color: PRIMARY; font-weight: 700; font-size: 9pt; }
 QPushButton#Chip { padding: 4px 12px; border-radius: 12px; color: TEXT2; font-weight: 600; }
 QPushButton#Chip:checked { background: PRIMARY_LIGHT; color: PRIMARY; border-color: #a8c7fa; }
+QWidget#ActionBar QComboBox { padding: 3px 6px; font-size: 9pt; }
+QWidget#ActionBar QPushButton#HeadBtn, QWidget#ActionBar QPushButton#HeadPrimary { padding: 6px 12px; border-radius: 14px; }
 QPushButton#Zero { padding: 5px 12px; border-radius: 13px; color: TEXT; font-weight: 600; }
 QPushButton#Zero:hover { border-color: PRIMARY; color: PRIMARY; }
 

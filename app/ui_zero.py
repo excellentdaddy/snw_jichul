@@ -15,11 +15,21 @@ def describe(c) -> str:
         parts.append(f"{'▶' if dx > 0 else '◀'} {abs(dx):.1f}")
     if abs(dy) >= 0.05:
         parts.append(f"{'▼' if dy > 0 else '▲'} {abs(dy):.1f}")
-    return ("  ".join(parts) + " mm") if parts else "0점"
+    txt = ("  ".join(parts) + " mm") if parts else ""
+    k = c.get("sx", 100.0)
+    if abs(k - 100.0) >= 0.05:
+        txt = (txt + "  " if txt else "") + f"{k:g}%"
+    return txt or "0점"
+
+
+def describe_pos(c) -> str:
+    """위치만 (방향 패드 가운데 표시용)."""
+    return describe({"dx": c.get("dx", 0.0), "dy": c.get("dy", 0.0)})
 
 
 TIP = ("이 프린터로 찍을 때 인쇄 내용 전체를 옮깁니다. 프린터마다 따로 저장됩니다.\n"
-       "예) 출력물이 양식보다 오른쪽으로 1mm 밀렸으면 ◀ 를 1mm 만큼 누르세요.")
+       "예) 출력물이 양식보다 오른쪽으로 1mm 밀렸으면 ◀ 를 1mm 만큼 누르세요.\n"
+       "배율: 글자·칸이 양식보다 작게(축소) 찍히면 100% 보다 크게, 크게 찍히면 작게 하세요.")
 
 
 class ZeroPad(QWidget):
@@ -64,6 +74,13 @@ class ZeroPad(QWidget):
         l1 = QLabel("좌우 (+ 오른쪽)"); l1.setObjectName("FieldLabel")
         l2 = QLabel("상하 (+ 아래)"); l2.setObjectName("FieldLabel")
         gg.addWidget(l1, 0, 0); gg.addWidget(self.sx, 0, 1); gg.addWidget(l2, 1, 0); gg.addWidget(self.sy, 1, 1)
+        # 배율: 인쇄 내용 전체 크기 (가로·세로 같이, 왼쪽 위 기준)
+        self.sk = QDoubleSpinBox()
+        self.sk.setRange(50, 150); self.sk.setDecimals(1); self.sk.setSingleStep(0.5); self.sk.setSuffix(" %")
+        self.sk.setToolTip("인쇄 내용 전체 크기. 축소돼 찍히면 키우고, 크게 찍히면 줄이세요. (기본 100%)")
+        self.sk.valueChanged.connect(self._typed)
+        l3 = QLabel("배율 (기본 100)"); l3.setObjectName("FieldLabel")
+        gg.addWidget(l3, 2, 0); gg.addWidget(self.sk, 2, 1)
         rv.addLayout(gg)
         rv.addStretch()
 
@@ -78,9 +95,9 @@ class ZeroPad(QWidget):
         self._sync(save=False)
 
     def _sync(self, save=True):
-        for sp, k in ((self.sx, "dx"), (self.sy, "dy")):
-            sp.blockSignals(True); sp.setValue(self.c.get(k, 0.0)); sp.blockSignals(False)
-        self.lbl_now.setText(describe(self.c).replace(" mm", "").replace("  ", "\n"))
+        for sp, k, d in ((self.sx, "dx", 0.0), (self.sy, "dy", 0.0), (self.sk, "sx", 100.0)):
+            sp.blockSignals(True); sp.setValue(self.c.get(k, d)); sp.blockSignals(False)
+        self.lbl_now.setText(describe_pos(self.c).replace(" mm", "").replace("  ", "\n"))
         if save:
             self.main.set_calib(self.key, self.c)  # 바로 저장
             if self.on_change:
@@ -94,10 +111,12 @@ class ZeroPad(QWidget):
     def _typed(self):
         self.c["dx"] = round(self.sx.value(), 2)
         self.c["dy"] = round(self.sy.value(), 2)
+        self.c["sx"] = self.c["sy"] = round(self.sk.value(), 2)
         self._sync()
 
     def zero(self):
         self.c["dx"] = self.c["dy"] = 0.0
+        self.c["sx"] = self.c["sy"] = 100.0
         self._sync()
 
 

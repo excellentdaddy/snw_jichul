@@ -1,5 +1,5 @@
 """버전 정보. 새로 배포할 때 APP_VERSION 만 올리면 된다 (tools/publish.py 가 읽음)."""
-APP_VERSION = "1.3.10"
+APP_VERSION = "1.3.11"
 APP_NAME = "지출이"
 APP_DIR_NAME = "S&W 지출결의서"          # 문서 폴더 아래 데이터 폴더 이름
 APP_EXE = "지출결의서.exe"

@@ -24,6 +24,10 @@ from ui_zero import describe
 
 from version import APP_NAME, APP_VERSION, UPDATE_SOURCE
 
+A5_MM = (148.0, 210.0)
+# 용지 선택지. 결의서 실제 용지(약 130×190)는 A5 보다 작아, 복합기(신도리코 등)는 B6 로 보내야 급지됨
+PAPERS = ["A5", "B6"]
+
 AMT_VAT_RE = re.compile(r"\d{1,3}(,\d{3})*\s?원(\s?\(VAT 포함\)|\s?\(VAT포함\))?")
 VAT_RE = re.compile(r"\(?(VAT\s*포함)\)?", re.I)
 # 내역의 '금액 :' 줄 — 기본 틀처럼 숫자가 빈 '2) 금액 : 원' 도 잡는다
@@ -840,15 +844,24 @@ class MainWindow(QMainWindow):
         # 미리보기 카드: 제목줄 오른쪽에 양식 · 프린터 · 영점
         self.cb_layout = QComboBox(); self.cb_layout.setToolTip("인쇄할 용지 양식 (한 번 정하면 거의 바꾸지 않음)")
         for k, l in LAYOUTS.items():
-            self.cb_layout.addItem(l.title, k)
+            self.cb_layout.addItem(l.title.split(" (")[0], k)  # 짧게 (5칸 / 6칸), 전체 이름은 툴팁
+            self.cb_layout.setItemData(self.cb_layout.count() - 1, l.title, Qt.ItemDataRole.ToolTipRole)
         self.cb_layout.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.cb_layout.currentIndexChanged.connect(self.layout_changed)
         from ui_dialogs import fill_printers
-        self.cb_printer = QComboBox(); self.cb_printer.setMinimumWidth(110); self.cb_printer.setToolTip("인쇄할 프린터")
+        self.cb_printer = QComboBox(); self.cb_printer.setMinimumWidth(90); self.cb_printer.setToolTip("인쇄할 프린터")
         self.cb_printer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         fill_printers(self.cb_printer)
         self.cb_printer.setCurrentIndex(max(self.cb_printer.findData(self.store.get("printer", "")), 0))
         self.cb_printer.currentIndexChanged.connect(self._printer_changed)
+        # 용지 크기: 프린터마다 따로 저장 (복합기는 실제 용지 크기와 같아야 인식함)
+        self.cb_paper = QComboBox(); self.cb_paper.setToolTip(
+            "이 프린터로 보낼 용지 크기 (프린터마다 따로 저장)\n"
+            "A5: 캐논 등 잉크젯 · B6: 결의서 용지를 A5로 인식하지 못하는 복합기(신도리코 등)\n"
+            "B6 로 찍었을 때 글자가 작거나 크면 [영점조정]의 배율로 맞추세요.")
+        self.cb_paper.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.cb_paper.activated.connect(self._paper_picked)
+        self._fill_paper()
         self.btn_zero = QPushButton(); self.btn_zero.setObjectName("Zero")
         self.btn_zero.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_zero.setToolTip("이 프린터의 출력 위치(영점) 보정 — 프린터마다 따로 저장")
@@ -860,8 +873,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(QKeySequence.StandardKey.Paste), self, activated=lambda: self.paste_image(quiet=True))
         self.preview.setToolTip("Ctrl+V: 클립보드 이미지(엑셀 표 등) 올리기\n"
                                 "드래그로 이동 · 모서리(파란 점) 비율 유지 · 변 가운데(흰 점) 가로/세로 조절 · Delete 삭제")
-        pv_card = card(self.preview, "미리보기", margins=(10, 10, 10, 10),
-                       extra=[self.cb_layout, self.cb_printer, self.btn_zero])
+        pv_card = card(self.preview, "미리보기", margins=(10, 10, 10, 10))
 
         # 미리보기 아래: 첨부파일 (작은 칸, 1~2줄)
         from ui_files import AttachPanel
@@ -869,7 +881,12 @@ class MainWindow(QMainWindow):
         self.attach_panel.changed.connect(self.changed)
         mid = QWidget(); mv = QVBoxLayout(mid); mv.setContentsMargins(0, 0, 0, 0); mv.setSpacing(12)
         # 미리보기 위: 새로 작성 · 저장 · 인쇄
-        ab = QHBoxLayout(); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(8); ab.addStretch()
+        # 미리보기 위 한 줄: [양식 · 프린터 · 용지 · 영점조정]  ……  [새로 작성 · 저장 · 인쇄]
+        bar = QWidget(); bar.setObjectName("ActionBar")
+        ab = QHBoxLayout(bar); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(6)
+        for wdg in (self.cb_layout, self.cb_printer, self.cb_paper, self.btn_zero):
+            ab.addWidget(wdg)
+        ab.addSpacing(10)
         for text, fn, tip, name in (("새로 작성", self.new_doc, "입력칸 비우기 (Ctrl+N)", "HeadBtn"),
                                     ("저장", self.do_save, "인쇄하지 않고 작성이력에만 저장 (Ctrl+S)", "HeadBtn"),
                                     ("인쇄", self.do_print, "인쇄하고 작성이력에 저장 (Ctrl+P)", "HeadPrimary")):
@@ -877,7 +894,7 @@ class MainWindow(QMainWindow):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, f=fn: f())
             ab.addWidget(b)
-        mv.addLayout(ab)
+        mv.addWidget(bar)
         mv.addWidget(pv_card, 1)
         att_card = card(self.attach_panel, "첨부파일 (A4로 같이 인쇄)", margins=(12, 8, 12, 8),
                         extra=[self.attach_panel.count_label])
@@ -1112,8 +1129,31 @@ class MainWindow(QMainWindow):
     def _printer_changed(self, _):
         self.store.set("printer", self.cb_printer.currentData())
         self._update_zero_btn()
+        self._fill_paper()
         c = self.get_calib()
         self.toast(f"프린터: {self.calib_key()}  ·  영점 보정 {describe(c)}")
+
+    # ---------- 프린터별 용지 크기 ----------
+    def paper_name(self, name=None):
+        """이 프린터로 보낼 용지 이름 ('A5' 또는 'B6'). 기본 A5."""
+        v = (self.store.get("paper", {}) or {}).get(self.calib_key(name))
+        return v if v in PAPERS else "A5"
+
+    def _fill_paper(self):
+        self.cb_printer.setToolTip(f"인쇄할 프린터: {self.cb_printer.currentText()}")  # 칸이 좁아 이름이 잘릴 때
+        cb = self.cb_paper
+        cb.blockSignals(True); cb.clear()
+        cb.addItems(PAPERS)
+        cb.setCurrentIndex(PAPERS.index(self.paper_name()))
+        cb.blockSignals(False)
+
+    def _paper_picked(self, i):
+        pn = PAPERS[i]
+        allp = dict(self.store.get("paper", {}) or {})
+        allp[self.calib_key()] = pn
+        self.store.set("paper", allp)
+        self.toast(f"프린터: {self.calib_key()}  ·  용지 {pn} 로 인쇄합니다. "
+                   "처음 한 번은 시험 인쇄로 위치·크기를 확인하고 [영점조정]에서 위치와 배율을 맞추세요.", 8000)
 
     # ---------- 프린터별 영점 보정 ----------
     def calib_key(self, name=None):
@@ -1158,6 +1198,7 @@ class MainWindow(QMainWindow):
         self.cb_printer.setCurrentIndex(max(self.cb_printer.findData(self.store.get("printer", "")), 0))
         self.cb_printer.blockSignals(False)
         self._update_zero_btn()
+        self._fill_paper()
         self.approval.set_owner_name(self.store.get("owner_name", ""))
         if not self.ed_name.currentText():
             self.ed_name.setCurrentText(self.store.get("default_name", ""))
@@ -1497,15 +1538,32 @@ class MainWindow(QMainWindow):
         name = self.store.get("printer", "")
         if name:
             pr.setPrinterName(name)
-        self.force_a5(pr)
+        self.force_paper(pr, self.paper_name(pr.printerName() or None))
         pr.setDocName("지출결의서")
         return pr
 
     @staticmethod
-    def force_a5(pr):
-        """용지를 A5 세로로 강제한다 (프린터 기본값이 A4여도). 인쇄 대화상자를 거친 뒤에도 다시 부른다."""
+    def b6_page(pr):
+        """프린터 드라이버가 가진 B6(세로) 용지. 없으면 JIS B6(128×182)."""
+        from PySide6.QtPrintSupport import QPrinterInfo
+        try:
+            for ps in QPrinterInfo.printerInfo(pr.printerName()).supportedPageSizes():
+                nm = ps.name().upper().replace(" ", "")
+                sz = ps.size(QPageSize.Unit.Millimeter)
+                if "B6" in nm and "ENV" not in nm and "봉투" not in nm \
+                        and sz.width() < sz.height() and 120 <= sz.width() <= 135:
+                    return ps
+        except Exception:  # noqa
+            pass
+        return QPageSize(QPageSize.PageSizeId.JisB6)
+
+    @classmethod
+    def force_paper(cls, pr, paper="A5"):
+        """용지를 A5 또는 B6 세로로 강제한다 (프린터 기본값이 A4여도). 인쇄 대화상자를 거친 뒤에도 다시 부른다."""
         from PySide6.QtCore import QSizeF
-        if not pr.setPageSize(QPageSize(QPageSize.PageSizeId.A5)) or \
+        if paper == "B6":
+            pr.setPageSize(cls.b6_page(pr))
+        elif not pr.setPageSize(QPageSize(QPageSize.PageSizeId.A5)) or \
                 pr.pageLayout().pageSize().id() != QPageSize.PageSizeId.A5:
             pr.setPageSize(QPageSize(QSizeF(148, 210), QPageSize.Unit.Millimeter, "A5",
                                      QPageSize.SizeMatchPolicy.FuzzyMatch))
@@ -1521,13 +1579,14 @@ class MainWindow(QMainWindow):
 
     def print_doc(self, d, guides=False, ask_dialog=None, files=None):
         pr = self.make_printer()
+        pname = self.paper_name(pr.printerName() or None)
         ask_dialog = self.store.get("show_dialog", False) if ask_dialog is None else ask_dialog
         if ask_dialog:
             dlg = QPrintDialog(pr, self)
             dlg.setWindowTitle("인쇄")
             if dlg.exec() != QPrintDialog.DialogCode.Accepted:
                 return False
-            self.force_a5(pr)  # 대화상자에서 A4 로 바뀌었어도 A5 로
+            self.force_paper(pr, pname)  # 대화상자에서 A4 로 바뀌었어도 고른 용지로
         prog = PrintProgress(self, pr.printerName() or "기본 프린터")
         prog.step(15, "인쇄 준비 중…")
         p = QPainter()
@@ -1536,13 +1595,14 @@ class MainWindow(QMainWindow):
             warn(self, "인쇄 실패", "프린터를 열 수 없습니다.\n설정 > 프린터 · 기본값에서 프린터를 확인하세요.")
             return False
         paper = pr.paperRect(QPrinter.Unit.Millimeter)  # 프린터 드라이버가 실제로 받아들인 용지
+        pw = min(paper.width(), A5_MM[0])
         if paper.width() > 160 or paper.height() > 222:
             prog.hide()
             name = pr.printerName() or "기본 프린터"
             if ask(self, "용지 크기 확인",
-                   f"프린터({name})가 A5가 아닌 {paper.width():.0f}×{paper.height():.0f}mm 용지로 인쇄하려고 합니다.\n"
+                   f"프린터({name})가 {pname}가 아닌 {paper.width():.0f}×{paper.height():.0f}mm 용지로 인쇄하려고 합니다.\n"
                    "프린터 설정에서 용지가 A4로 고정돼 있거나 '용지에 맞춤(확대/축소)'이 켜져 있으면 이렇게 됩니다.\n\n"
-                   "[예] 인쇄를 취소하고 프린터의 '인쇄 기본 설정' 창을 엽니다. 용지 크기를 A5로 바꿔 주세요.\n"
+                   f"[예] 인쇄를 취소하고 프린터의 '인쇄 기본 설정' 창을 엽니다. 용지 크기를 {pname}로 바꿔 주세요.\n"
                    "[아니요] 그대로 인쇄합니다."):
                 pr.abort(); p.end(); prog.close()
                 self.open_printer_prefs(name)
@@ -1555,7 +1615,10 @@ class MainWindow(QMainWindow):
         p.scale(k, k)
         c = self.get_calib(self.calib_key(pr.printerName()))  # 프린터별 영점·배율
         p.translate(c["dx"] * render.U, c["dy"] * render.U)
-        p.scale(c["sx"] / 100.0, c["sy"] / 100.0)
+        # 좌표는 A5(148mm 폭) 기준. B6 처럼 폭이 좁은 용지는 그만큼 왼쪽으로 당겨 오른쪽이 잘리지 않게 한다.
+        # 나머지 위치·크기 차이는 [영점조정]의 위치·배율로 맞춘다.
+        p.translate(-(A5_MM[0] - pw) / 2 * render.U, 0)
+        p.scale(c["sx"] / 100.0, c["sy"] / 100.0)  # 배율 (왼쪽 위 기준)
         render.render(p, d, self.lay, guides=guides, adjust=self.adjust())
         prog.step(80 if not files else 50, "프린터로 보내는 중…")
         ok = p.end()
@@ -1577,7 +1640,7 @@ class MainWindow(QMainWindow):
                 prog.close()
                 warn(self, "첨부 인쇄 실패", f"지출결의서는 보냈지만 첨부파일을 인쇄하지 못했습니다.\n{err}")
                 return True
-            prog.done(f"지출결의서(A5) 1장 + 첨부 A4 {sent}쪽을 인쇄 대기열에 보냈습니다.")
+            prog.done(f"지출결의서({pname}) 1장 + 첨부 A4 {sent}쪽을 인쇄 대기열에 보냈습니다.")
             return True
         prog.done()
         return True
