@@ -132,6 +132,8 @@ class ZeroDialog(QDialog):
         v.addWidget(head)
         tip = QLabel(TIP); tip.setObjectName("Hint"); tip.setWordWrap(True)
         v.addWidget(tip)
+        self.key = key
+        self.orig = dict(main.get_calib(key))  # [취소]·Esc·창 닫기 → 이 값으로 되돌림
         self.pad = ZeroPad(main, key)
         v.addWidget(card(self.pad))
 
@@ -139,6 +141,14 @@ class ZeroDialog(QDialog):
         bz = QPushButton("0점으로"); bz.clicked.connect(self.pad.zero)
         bt = QPushButton("시험 인쇄"); bt.clicked.connect(main.test_print)
         bt.setToolTip("빈 A5 용지에 양식 선과 내용을 함께 인쇄 → 실제 용지와 겹쳐 비교")
+        bc = QPushButton("취소"); bc.clicked.connect(self.reject)
+        bc.setToolTip("바꾼 값을 버리고 창을 열기 전 값으로 되돌립니다 (Esc)")
         bo = QPushButton("확인"); bo.setObjectName("Primary"); bo.clicked.connect(self.accept)
-        h.addWidget(bz); h.addWidget(bt); h.addStretch(); h.addWidget(bo)
+        bo.setDefault(True)
+        h.addWidget(bz); h.addWidget(bt); h.addStretch(); h.addWidget(bc); h.addWidget(bo)
         v.addLayout(h)
+
+    def reject(self):
+        """[취소]·Esc·창 닫기(X): 바꾼 값은 버린다 (시험 인쇄는 바꾼 값으로 미리 찍어 볼 수 있음)."""
+        self.main.set_calib(self.key, self.orig)
+        super().reject()

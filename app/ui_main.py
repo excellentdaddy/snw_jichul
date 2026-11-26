@@ -592,6 +592,31 @@ class ApprovalPanel(QWidget):
                 s["date"] = None
         return st
 
+    def marks(self) -> str:
+        """작성이력에 같이 저장할 결재 표시 (JSON). 결재일은 불러올 때 오늘로 바뀌므로 저장하지 않는다."""
+        import json
+        owner = self.chk_owner.isChecked() if hasattr(self, "chk_owner") else False
+        slash = [bool(sl.isChecked()) and i not in self._auto for i, (_, sl, _) in enumerate(self.rows)]
+        return json.dumps({"n": len(self.rows), "slash": slash, "jeon": self.jeon_idx(), "owner": owner})
+
+    def set_marks(self, js) -> bool:
+        """저장해 둔 결재 표시를 되살린다. 칸 수가 지금 양식과 다르면 False."""
+        import json
+        try:
+            m = json.loads(js or "")
+            if not isinstance(m, dict) or int(m.get("n", -1)) != len(self.rows):
+                return False
+        except (ValueError, TypeError):
+            return False
+        j = m.get("jeon")
+        slash = list(m.get("slash") or [])
+        for i, (_, sl, jn) in enumerate(self.rows):
+            for w, on in ((jn, i == j and jn.isEnabled()), (sl, i < len(slash) and bool(slash[i]) and sl.isEnabled())):
+                w.blockSignals(True); w.setChecked(on); w.blockSignals(False)
+        self.chk_owner.blockSignals(True); self.chk_owner.setChecked(bool(m.get("owner"))); self.chk_owner.blockSignals(False)
+        self._apply_auto()
+        return True
+
     def reset(self, base: date):
         for _, sl, jn in self.rows:
             for w in (sl, jn):
@@ -1464,7 +1489,9 @@ class MainWindow(QMainWindow):
         self.attach_panel.set_items(self.store.files_of(rec))  # 첨부파일도 같이
         self.chk_vat.setChecked(bool(re.search(r"vat\s*포함", rec.get("detail") or "", re.I)))
         self.approval.reset(today)
-        if self.store.get("auto_jeon_200k", False) and int(rec.get("amount") or 0) <= 200000:
+        if self.approval.set_marks(rec.get("appr")):
+            pass  # 저장해 둔 사선·전결 그대로
+        elif self.store.get("auto_jeon_200k", False) and int(rec.get("amount") or 0) <= 200000:
             self.approval.set_jeon(2)
         self._loading = False
         self._detail_changed()
@@ -1531,15 +1558,16 @@ class MainWindow(QMainWindow):
             warn(self, "저장", "지출처나 내역을 입력하세요.")
             return
         rec, imgs, files = self._record(d), self._images_payload(), self.attach_panel.payload()
-        if self.loaded_id and self.store.update(self.loaded_id, rec, images=imgs, files=files):
+        appr = self.approval.marks()
+        if self.loaded_id and self.store.update(self.loaded_id, rec, images=imgs, files=files, appr=appr):
             title, msg = "✓ 저장했습니다", "불러온 이력을 지금 내용으로 덮어썼습니다."
         else:
-            added = self.store.add(rec, images=imgs, files=files)
+            added = self.store.add(rec, images=imgs, files=files, appr=appr)
             self.loaded_id = self.store.find_id(rec)
             title, msg = ("✓ 저장했습니다", "작성이력에 새로 저장했습니다.") if added else \
                          ("✓ 저장했습니다", "같은 내용의 이력에 덮어썼습니다.")
             if not added and self.loaded_id:
-                self.store.update(self.loaded_id, rec, images=imgs, files=files)
+                self.store.update(self.loaded_id, rec, images=imgs, files=files, appr=appr)
         self.load_history()
         self.toast(f"{title} — {msg}")
         Notice(self, title, msg)
@@ -1663,7 +1691,8 @@ class MainWindow(QMainWindow):
         if not self._validate(d):
             return
         if self.print_doc(d, files=self.attach_panel.to_print()):
-            added = self.store.add(self._record(d), images=self._images_payload(), files=self.attach_panel.payload())
+            added = self.store.add(self._record(d), images=self._images_payload(), files=self.attach_panel.payload(),
+                                   appr=self.approval.marks())
             self.loaded_id = self.store.find_id(self._record(d))  # 이후 저장은 방금 인쇄한 이력에 덮어씀
             self.load_history()
             self.toast("인쇄했습니다." + (" 작성이력에 저장했습니다." if added else ""), 5000)

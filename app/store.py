@@ -90,6 +90,8 @@ class Store:
             self.con.execute("ALTER TABLE records ADD COLUMN attach TEXT")
         if "files" not in cols:  # 첨부파일 목록 [{"hash", "print"}]
             self.con.execute("ALTER TABLE records ADD COLUMN files TEXT")
+        if "appr" not in cols:  # 결재란 표시 {"n", "slash": [..], "jeon": 칸|None, "owner": bool}
+            self.con.execute("ALTER TABLE records ADD COLUMN appr TEXT")
         self.con.commit()
 
     # ---------- 작성이력 ----------
@@ -123,7 +125,7 @@ class Store:
             out.append({"hash": h, **{k: round(float(im[k]), 2) for k in ("x", "y", "w", "h")}})
         return json.dumps(out)
 
-    def add(self, rec: dict, source="직접작성", commit=True, images=None, files=None) -> bool:
+    def add(self, rec: dict, source="직접작성", commit=True, images=None, files=None, appr=None) -> bool:
         """새로 추가하면 True. 같은 내용이 이미 있으면 False.
         직접 작성한 것이면 그 이력의 이미지·첨부파일을 지금 것으로 갱신한다 (가져오기는 건드리지 않음)."""
         r = self._norm(rec)
@@ -135,17 +137,18 @@ class Store:
         if self.exists(r):
             if direct:
                 self.con.execute(
-                    "UPDATE records SET attach=?, files=?, note=? WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
-                    (attach, fj, r["note"], r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
+                    "UPDATE records SET attach=?, files=?, note=?, appr=? "
+                    "WHERE date=? AND payee=? AND amount=? AND name=? AND detail=?",
+                    (attach, fj, r["note"], appr, r["date"], r["payee"], r["amount"], r["name"], r["detail"]))
                 self._clean_images()
                 if commit:
                     self.con.commit()
             return False
         self.con.execute(
-            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created,attach,files)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO records(date,payee,amount,name,detail,note,account,source,created,attach,files,appr)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"],
-             r["account"], source, datetime.now().isoformat(timespec="seconds"), attach, fj),
+             r["account"], source, datetime.now().isoformat(timespec="seconds"), attach, fj, appr),
         )
         if commit:
             self.con.commit()
@@ -159,15 +162,15 @@ class Store:
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"])).fetchone()
         return row[0] if row else None
 
-    def update(self, rid: int, rec: dict, images=None, files=None) -> bool:
+    def update(self, rid: int, rec: dict, images=None, files=None, appr=None) -> bool:
         """그 이력을 지금 내용(이미지 포함, 없으면 이미지 지움)으로 덮어쓴다. 이력이 없으면 False."""
         r = self._norm(rec)
         self._unhide(r["name"]); self._unhide(r["account"], "hidden_accounts")
         cur = self.con.execute(
-            "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?, files=?"
-            " WHERE id=?",
+            "UPDATE records SET date=?, payee=?, amount=?, name=?, detail=?, note=?, account=?, attach=?, files=?,"
+            " appr=? WHERE id=?",
             (r["date"], r["payee"], r["amount"], r["name"], r["detail"], r["note"], r["account"],
-             self._attach_json(images), self._files_json(files), rid))
+             self._attach_json(images), self._files_json(files), appr, rid))
         self._clean_images()
         self.con.commit()
         return cur.rowcount > 0
